@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0d1726" />
+    <title>K线形态训练 - 日线 MVP</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">K-LINE LAB · MVP</p>
+        <h1>K线形态训练</h1>
+      </div>
+      <div class="top-actions">
+        <div class="market-fetch" aria-label="获取真实行情">
+          <input id="marketSymbol" type="text" inputmode="numeric" maxlength="8" placeholder="代码 600000 / 510300" aria-label="股票或ETF代码" />
+          <button class="ghost-button" id="fetchMarketButton" type="button">获取真实日线</button>
+        </div>
+        <label class="compact-field">
+          <span>训练模式</span>
+          <select id="modeSelect">
+            <option value="naked">裸K练盘感</option>
+            <option value="daily">日线演示</option>
+          </select>
+        </label>
+        <input id="csvFileInput" type="file" accept=".csv,.tsv,.txt" hidden />
+        <button class="ghost-button" id="importButton">导入日线 CSV</button>
+        <button class="ghost-button" id="resetButton">重新开始</button>
+        <div class="user-box"><span id="userNameLabel">未登录</span><button class="ghost-button" id="loginButton" type="button">用户名登录</button></div>
+      </div>
+    </header>
+
+    <main class="page-shell">
+      <section class="notice">
+        <span class="notice-dot"></span>
+        <span id="dataStatus">当前为内置演示行情。</span>
+        <span id="marketDataHint">输入 A 股或场内 ETF 代码，可获取真实历史日线。</span>
+        <span>成交价按当前 K 线收盘价，A 股模式执行 T+1，所有结果仅用于训练。</span>
+      </section>
+
+      <section class="stat-grid" aria-label="账户概况">
+        <article class="stat-card primary-stat">
+          <span>总资产</span>
+          <strong id="equityValue">¥1,000,000.00</strong>
+          <small id="returnValue">收益率 0.00%</small>
+        </article>
+        <article class="stat-card">
+          <span>可用现金</span>
+          <strong id="cashValue">¥1,000,000.00</strong>
+          <small>不含持仓市值</small>
+        </article>
+        <article class="stat-card">
+          <span>持仓市值</span>
+          <strong id="positionValue">¥0.00</strong>
+          <small id="positionText">0 股</small>
+        </article>
+        <article class="stat-card">
+          <span>浮动盈亏</span>
+          <strong id="pnlValue">¥0.00</strong>
+          <small id="barProgress">第 41 根 / 180 根</small>
+        </article>
+      </section>
+
+      <section class="workspace-grid">
+        <div class="chart-panel panel">
+          <div class="panel-heading chart-heading">
+            <div>
+              <div class="identity-row">
+                <h2 id="symbolTitle">训练标的 · 隐藏</h2>
+                <span class="tag" id="timeframeTag">日线</span>
+              </div>
+              <p id="dateLabel">日期已隐藏 · 训练结束后揭晓</p>
+            </div>
+            <div class="chart-tools">
+              <label class="check-field"><input id="identityToggle" type="checkbox" /> 显示名称和日期</label>
+              <label class="check-field"><input id="chipToggle" type="checkbox" checked /> 估算筹码峰</label>
+              <label class="compact-field indicator-field">
+                <span>副图</span>
+                <select id="indicatorSelect">
+                  <option value="none">无</option>
+                  <option value="macd">MACD</option>
+                  <option value="kdj">KDJ</option>
+                  <option value="both" selected>MACD + KDJ</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="chartCanvas" aria-label="K线图"></canvas>
+            <div class="chart-empty" id="finishOverlay" hidden>
+              <strong>训练完成</strong>
+              <span>点击“重新开始”再进行一局</span>
+            </div>
+          </div>
+          <section class="result-reveal" id="resultReveal" hidden aria-live="polite">
+            <div>
+              <span class="result-kicker">本局形态答案</span>
+              <h3 id="revealedPatternName">—</h3>
+              <p id="revealedPatternRule">—</p>
+              <small id="revealedPatternNote">训练结束后显示形态信息</small>
+            </div>
+            <button class="primary-button" id="collectSampleButton" type="button">收藏到训练库</button>
+          </section>
+          <div class="legend-row">
+            <span><i class="legend-candle up"></i>上涨</span>
+            <span><i class="legend-candle down"></i>下跌</span>
+            <span><i class="legend-line ma5"></i>MA5</span>
+            <span><i class="legend-line ma20"></i>MA20</span>
+            <span><i class="legend-line ma60"></i>MA60</span>
+            <span class="legend-note">红涨绿跌 · 筹码峰为量价估算 · 演示费率可在配置中调整</span>
+          </div>
+        </div>
+
+        <aside class="side-column">
+          <section class="panel trade-panel">
+            <div class="panel-heading">
+              <div>
+                <h2>模拟交易</h2>
+                <p>按当前收盘价成交</p>
+              </div>
+              <span class="price-badge" id="currentPrice">¥0.00</span>
+            </div>
+            <div class="trade-summary">
+              <div><span>持仓成本</span><strong id="avgCostValue">¥0.00</strong></div>
+              <div><span>可卖数量</span><strong id="availableValue">0 股</strong></div>
+            </div>
+            <label class="number-field">
+              <span>交易数量（100 股整数倍）</span>
+              <input id="quantityInput" type="number" min="100" step="100" value="10000" />
+            </label>
+            <div class="quick-position" aria-label="快捷仓位">
+              <div class="quick-position-row">
+                <span>买入仓位</span>
+                <div>
+                  <button type="button" data-quick-side="buy" data-divisor="1">全仓</button>
+                  <button type="button" data-quick-side="buy" data-divisor="2">半仓</button>
+                  <button type="button" data-quick-side="buy" data-divisor="3">1/3仓</button>
+                  <button type="button" data-quick-side="buy" data-divisor="6">1/6仓</button>
+                </div>
+              </div>
+              <div class="quick-position-row">
+                <span>卖出仓位</span>
+                <div>
+                  <button type="button" data-quick-side="sell" data-divisor="1">全仓</button>
+                  <button type="button" data-quick-side="sell" data-divisor="2">半仓</button>
+                  <button type="button" data-quick-side="sell" data-divisor="3">1/3仓</button>
+                  <button type="button" data-quick-side="sell" data-divisor="6">1/6仓</button>
+                </div>
+              </div>
+            </div>
+            <div class="trade-buttons">
+              <button class="buy-button" id="buyButton">买入</button>
+              <button class="sell-button" id="sellButton">卖出</button>
+            </div>
+            <p class="trade-hint" id="tradeHint">今日买入的股票将在下一根日 K 线后可卖。</p>
+          </section>
+
+          <section class="panel indicator-panel">
+            <div class="panel-heading">
+              <div>
+                <h2>指标读数</h2>
+                <p>仅供参考，不生成买卖信号；筹码峰为量价估算</p>
+              </div>
+            </div>
+            <div class="indicator-values">
+              <div><span>MA5</span><strong id="ma5Value">—</strong></div>
+              <div><span>MA20</span><strong id="ma20Value">—</strong></div>
+              <div><span>MA60</span><strong id="ma60Value">—</strong></div>
+              <div><span>MACD</span><strong id="macdValue">—</strong></div>
+              <div><span>KDJ</span><strong id="kdjValue">—</strong></div>
+              <div><span>成交量</span><strong id="volumeValue">—</strong></div>
+              <div><span>VOL-MA120</span><strong id="volumeMa120Value">—</strong></div>
+              <div><span>VOL-MA250</span><strong id="volumeMa250Value">—</strong></div>
+              <div><span>量能判断</span><strong id="volumeSignalValue">—</strong></div>
+              <div><span>主筹码峰（估算）</span><strong id="chipPeakValue">—</strong></div>
+              <div><span>平均成本（估算）</span><strong id="chipAverageValue">—</strong></div>
+              <div><span>70%筹码区间</span><strong id="chipRangeValue">—</strong></div>
+            </div>
+          </section>
+        </aside>
+      </section>
+
+      <section class="bottom-grid">
+        <section class="panel replay-panel">
+          <div class="panel-heading">
+            <div>
+              <h2>推进训练</h2>
+              <p id="replayHint">先观察当前走势，再决定是否交易 · 空格键推进</p>
+            </div>
+            <span class="step-count" id="stepCount">41 / 180</span>
+          </div>
+          <div class="progress-track"><span id="progressBar"></span></div>
+          <div class="replay-actions">
+            <button class="secondary-button" id="previousButton">上一根</button>
+            <button class="primary-button" id="nextButton">下一根 K 线 <kbd>空格</kbd></button>
+          </div>
+        </section>
+
+        <section class="panel log-panel">
+          <div class="panel-heading">
+            <div>
+              <h2>交易记录</h2>
+              <p>每笔成交都会保留在本局复盘中</p>
+            </div>
+            <span class="trade-count" id="tradeCount">0 笔</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>时间</th><th>方向</th><th>价格</th><th>数量</th><th>费用</th><th>成交后现金</th></tr>
+              </thead>
+              <tbody id="tradeLogBody">
+                <tr class="empty-row"><td colspan="6">本局还没有交易记录</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="panel library-panel">
+        <div class="panel-heading library-heading">
+          <div>
+            <h2>形态样本库</h2>
+              <p>当前先整理用户图片中的形态模板；真实股票波段收藏后进入候选样本库，按置信度和审核状态管理。</p>
+          </div>
+          <span class="library-count" id="libraryCount">0 个模板</span>
+        </div>
+        <div class="library-toolbar">
+          <label class="compact-field">
+            <span>查看库</span>
+            <select id="librarySelect">
+              <option value="training">训练库</option>
+              <option value="sample">样本库</option>
+            </select>
+          </label>
+          <label class="compact-field">
+            <span>类型</span>
+            <select id="categorySelect">
+              <option value="all">全部类型</option>
+            </select>
+          </label>
+          <label class="search-field">
+            <span>搜索</span>
+            <input id="patternSearch" type="search" placeholder="输入形态名称" />
+          </label>
+          <button class="primary-button" id="randomPatternButton" title="随机选择一个形态知识卡，不会改变当前训练行情">随机选择知识模板</button>
+          <button class="secondary-button" id="scanSamplesButton" title="扫描当前已加载的真实行情或本地 CSV">扫描候选片段</button>
+        </div>
+        <div class="selected-pattern" id="selectedPattern">
+          <span>当前未选择知识模板</span>
+          <small>知识模板用于学习形态规则，不会改变当前 K 线；实际行情由训练样本决定</small>
+        </div>
+        <section class="candidate-samples">
+          <div class="collected-heading">
+            <div>
+              <h3>候选样本库</h3>
+              <p id="candidateScanHint">获取真实行情后，可扫描符合底部逻辑的历史片段。</p>
+            </div>
+            <span class="library-count" id="candidateSampleCount">0 个候选</span>
+          </div>
+          <div class="collected-grid" id="candidateSampleList"><div class="collected-empty">暂未扫描候选片段。</div></div>
+        </section>
+        <div class="library-grid" id="libraryGrid"></div>
+        <section class="collected-samples">
+          <div class="collected-heading">
+            <div>
+              <h3>我收藏的训练片段</h3>
+              <p>真实行情收藏默认待审核；只有经过验证且置信度达到 90% 的样本才允许自动进入训练库。多人服务上线后才会共享给其他用户。</p>
+            </div>
+            <span class="library-count" id="collectedSampleCount">0 个片段</span>
+          </div>
+          <div class="collected-grid" id="collectedSampleList"></div>
+        </section>
+      </section>
+    </main>
+
+    <div class="modal-backdrop" id="loginModal" hidden>
+      <section class="login-card" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+        <div class="panel-heading">
+          <div><h2 id="loginTitle">自用测试登录</h2><p>只需输入用户名，记录保存在当前浏览器。</p></div>
+          <button class="icon-button" id="closeLoginButton" type="button" aria-label="关闭">×</button>
+        </div>
+        <label class="search-field"><span>用户名</span><input id="userNameInput" type="text" maxlength="20" placeholder="例如：小明" /></label>
+        <p class="trade-hint" id="loginHint">当前为自用测试阶段，不需要手机号和密码。</p>
+        <div class="login-actions"><button class="secondary-button" id="cancelLoginButton" type="button">取消</button><button class="primary-button" id="saveLoginButton" type="button">保存用户名</button></div>
+      </section>
+    </div>
+
+    <script src="library.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
