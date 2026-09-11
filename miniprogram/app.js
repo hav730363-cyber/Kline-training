@@ -1,4 +1,4 @@
-const CLOUD_ENV_ID = "";
+const CLOUD_ENV_ID = "sunshine-666";
 
 App({
   globalData: {
