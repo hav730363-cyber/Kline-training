@@ -1,0 +1,15 @@
+{
+  "description": "K线形态训练微信小程序测试版",
+  "appid": "wx709f67396b06ba71",
+  "compileType": "miniprogram",
+  "libVersion": "3.8.8",
+  "setting": {
+    "urlCheck": false,
+    "es6": true,
+    "postcss": true,
+    "minified": false,
+    "enhance": true
+  },
+  "miniprogramRoot": "./",
+  "cloudfunctionRoot": "../cloudfunctions/"
+}

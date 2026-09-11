@@ -1,0 +1,9 @@
+{
+  "name": "get-market-data",
+  "version": "1.0.0",
+  "description": "通过云函数获取并校验东方财富 K 线",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "latest"
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "desc": "K线形态训练测试版站点地图",
+  "rules": [{ "action": "allow", "page": "*" }]
+}

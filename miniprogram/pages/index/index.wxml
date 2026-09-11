@@ -1,0 +1,25 @@
+<view class="page-shell">
+  <view class="panel">
+    <text class="title">K线形态训练</text>
+    <text class="muted">微信小程序测试版 · 真实行情链路验证</text>
+  </view>
+
+  <view class="panel">
+    <text class="label">行情代码</text>
+    <view class="row">
+      <view class="field"><input class="input" value="{{symbol}}" maxlength="6" type="number" bindinput="onSymbolInput" /></view>
+      <picker mode="selector" range="{{periodLabels}}" value="{{periodIndex}}" bindchange="onPeriodChange">
+        <view class="input">{{periodLabels[periodIndex]}}</view>
+      </picker>
+    </view>
+    <button class="button" loading="{{loading}}" disabled="{{loading}}" bindtap="loadMarketData">获取东方财富行情</button>
+  </view>
+
+  <view class="panel">
+    <view class="status {{error ? 'error' : ''}}">{{status}}</view>
+    <view class="canvas-wrap">
+      <canvas type="2d" id="klineCanvas" class="chart"></canvas>
+    </view>
+    <text class="hint">当前骨架只验证微信小程序、CloudBase 和东方财富数据链路；完整 K 线指标和交易功能将在链路确认后迁移。</text>
+  </view>
+</view>

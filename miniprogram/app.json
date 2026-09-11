@@ -1,0 +1,14 @@
+{
+  "pages": [
+    "pages/index/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "K线形态训练",
+    "navigationBarBackgroundColor": "#0d1b2a",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#08111f",
+    "backgroundTextStyle": "dark"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}
