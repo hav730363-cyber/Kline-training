@@ -7,7 +7,8 @@ const minCommission = 5;
 const feeRuleVersion = "中国市场训练费率-v1（佣金0.03%最低5元；A股卖出印花税0.05%；过户费0.001%）";
 const demoHistoryBars = 250;
 const demoTrainingBars = 180;
-const initialVisibleBars = 41;
+const contextBarCount = 40;
+const initialVisibleBars = 1;
 const defaultChartBars = 65;
 const minChartBars = 20;
 const maxChartBars = 240;
@@ -21,7 +22,7 @@ const state = {
   dataMeta: { provider: "内置演示", adjust: "qfq", period: "daily", fetchedAt: null, rawCount: demoHistoryBars + demoTrainingBars, droppedCount: 0 },
   trainingStartIndex: demoHistoryBars,
   trainingEndIndex: demoHistoryBars + demoTrainingBars - 1,
-  currentIndex: demoHistoryBars + initialVisibleBars - 1,
+  currentIndex: demoHistoryBars,
   cash: initialCash,
   lots: [],
   trades: [],
@@ -271,11 +272,14 @@ function indicatorData() {
   return { closes, volumes, dif, dea, macd, k, d, j };
 }
 
-function currentBars() { return state.bars.slice(state.trainingStartIndex, state.currentIndex + 1); }
+function currentBars() {
+  const chartStart = Math.max(0, state.trainingStartIndex - contextBarCount);
+  return state.bars.slice(chartStart, state.currentIndex + 1);
+}
 function currentBar() { return state.bars[state.currentIndex]; }
 function trainingLength() { return state.trainingEndIndex - state.trainingStartIndex + 1; }
 function shownBarCount() { return state.currentIndex - state.trainingStartIndex + 1; }
-function firstTrainingDecisionIndex() { return state.trainingStartIndex + initialVisibleBars - 1; }
+function firstTrainingDecisionIndex() { return state.trainingStartIndex; }
 function heldQty() { return state.lots.reduce((sum, lot) => sum + lot.qty, 0); }
 function availableQty() {
   const tPlusZero = state.tradingRule === "etf-t0";
@@ -973,7 +977,7 @@ function trainCandidate(key) {
 
   const isSnapshot = candidate.snapshot === true;
   if (isSnapshot) {
-    const minimumSnapshotBars = Math.max(initialVisibleBars, 45);
+    const minimumSnapshotBars = 45;
     if (!Array.isArray(candidate.bars) || candidate.bars.length < minimumSnapshotBars) {
       return setHint("这个样本缺少完整 K 线数据，不能开始训练。请重新载入样本库。", true);
     }
@@ -993,8 +997,15 @@ function trainCandidate(key) {
     } catch (error) {
       return setHint(`样本数据校验失败：${error.message}`, true);
     }
-    state.trainingStartIndex = 0;
-    state.trainingEndIndex = state.bars.length - 1;
+    const snapshotStart = Number(candidate.trainingStartIndex ?? candidate.startIndex);
+    const snapshotEnd = Number(candidate.trainingEndIndex ?? candidate.endIndex);
+    if (!Number.isInteger(snapshotStart) || !Number.isInteger(snapshotEnd)
+      || snapshotStart < 0 || snapshotEnd < snapshotStart || snapshotEnd >= state.bars.length
+      || snapshotEnd - snapshotStart + 1 < minimumSnapshotBars) {
+      return setHint("这个样本的训练区间不完整，不能开始训练。请重新载入样本库。", true);
+    }
+    state.trainingStartIndex = snapshotStart;
+    state.trainingEndIndex = snapshotEnd;
   } else {
     if (candidate.symbol !== state.symbol) return setHint("该样本属于其他标的，请先获取对应代码的真实行情后再训练。", true);
     const startIndex = Number(candidate.startIndex);
@@ -1157,7 +1168,8 @@ function drawChart() {
   const ctx = canvas.getContext("2d");
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   ctx.fillStyle = "#0a1423"; ctx.fillRect(0, 0, width, height);
-  const bars = currentBars();
+  const chartStartIndex = Math.max(0, state.trainingStartIndex - contextBarCount);
+  const bars = state.bars.slice(chartStartIndex, state.currentIndex + 1);
   if (!bars.length) {
     ctx.fillStyle = "#71859f"; ctx.font = "13px Inter, sans-serif"; ctx.fillText("暂无可显示的 K 线", 24, 34);
     return;
@@ -1169,7 +1181,7 @@ function drawChart() {
   const start = Math.max(0, bars.length - visibleCount - state.chartOffset);
   const visible = bars.slice(start, start + visibleCount);
   const indicators = indicatorData();
-  const firstGlobalIndex = state.trainingStartIndex + start;
+  const firstGlobalIndex = chartStartIndex + start;
   const left = 48, right = 14, top = 22, bottom = 28;
   const chipWidth = state.showChip ? Math.min(132, Math.max(88, width * 0.17)) : 0;
   const chartRight = Math.max(left + 80, width - right);
@@ -1213,6 +1225,15 @@ function drawChart() {
   drawIndexedLine(ctx, visible.length, (index) => sma(indicators.closes, 20, firstGlobalIndex + index), "#7da8ff", yPrice, xBar);
   drawIndexedLine(ctx, visible.length, (index) => sma(indicators.closes, 60, firstGlobalIndex + index), "#d18cff", yPrice, xBar);
   if (state.showChip && chartRight - (plotRight + 7) > 20) drawChipProfile(ctx, chipDistribution(visible, currentBar().close), plotRight + 7, chartRight, priceTop, priceBottom, yPrice, currentBar().close);
+  const trainingBoundary = state.trainingStartIndex - firstGlobalIndex;
+  if (trainingBoundary > 0 && trainingBoundary < visible.length) {
+    const boundaryX = xBar(trainingBoundary - 0.5);
+    ctx.save();
+    ctx.setLineDash([5, 4]); ctx.strokeStyle = "rgba(244,201,93,.85)"; ctx.lineWidth = 1.25;
+    ctx.beginPath(); ctx.moveTo(boundaryX, priceTop); ctx.lineTo(boundaryX, height - bottom); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = "#f4c95d"; ctx.font = "bold 10px Inter, sans-serif"; ctx.fillText("训练开始", Math.min(boundaryX + 5, plotRight - 48), priceTop + 13);
+    ctx.restore();
+  }
   const volumeMa120 = visible.map((_, index) => sma(indicators.volumes, 120, firstGlobalIndex + index));
   const volumeMa250 = visible.map((_, index) => sma(indicators.volumes, 250, firstGlobalIndex + index));
   const maxVolume = Math.max(...visible.map((bar) => bar.volume), ...volumeMa120.filter(Number.isFinite), ...volumeMa250.filter(Number.isFinite));

@@ -24,6 +24,7 @@ KLINE_HOST = "https://7.push2his.eastmoney.com"
 USER_AGENT = "Mozilla/5.0 KLineTrainingSampleBuilder/1.0"
 UT = "fa5fd1943c7b386f172d6893dbbd1b5b"
 PERIODS = {"daily": 101, "weekly": 102, "monthly": 103, "yearly": 106}
+CONTEXT_BARS = 40
 LIBRARY_TEXT = (ROOT / "library.js").read_text(encoding="utf-8")
 PATTERN_IDS = re.findall(r'id:\s*"([^"]+)"', LIBRARY_TEXT)
 PATTERN_NAMES = dict(re.findall(r'id:\s*"([^"]+)"\s*,\s*name:\s*"([^"]+)"', LIBRARY_TEXT))
@@ -202,11 +203,14 @@ def collect_candidates(universe: list[dict]) -> list[dict]:
         if len(bars) < 260:
             continue
         for size in (60, 90, 120, 180):
-            for end in range(size - 1, len(bars), 15):
-                segment = bars[end - size + 1:end + 1]
+            for end in range(CONTEXT_BARS + size - 1, len(bars), 15):
+                training_start = end - size + 1
+                context_start = training_start - CONTEXT_BARS
+                segment = bars[training_start:end + 1]
+                snapshot = bars[context_start:end + 1]
                 for pattern_id in PATTERN_IDS:
                     score = score_pattern(pattern_id, segment)
-                    all_candidates.append({"code": code, "name": name, "patternId": pattern_id, "score": round(score, 4), "bars": segment})
+                    all_candidates.append({"code": code, "name": name, "patternId": pattern_id, "score": round(score, 4), "bars": snapshot, "trainingBars": segment})
         time.sleep(0.18)
     selected = []
     for pattern_id in PATTERN_IDS:
@@ -214,7 +218,7 @@ def collect_candidates(universe: list[dict]) -> list[dict]:
         used = set()
         count = 0
         for item in pool:
-            start_date, end_date = item["bars"][0]["date"], item["bars"][-1]["date"]
+            start_date, end_date = item["trainingBars"][0]["date"], item["trainingBars"][-1]["date"]
             key = (item["code"], start_date, end_date)
             if key in used:
                 continue
@@ -224,11 +228,15 @@ def collect_candidates(universe: list[dict]) -> list[dict]:
                 "symbol": f"{item['name']} ({item['code']})" if item["name"] else item["code"],
                 "code": item["code"], "patternId": pattern_id,
                 "patternName": PATTERN_NAMES.get(pattern_id, pattern_id), "startDate": start_date, "endDate": end_date,
-                "startIndex": 0, "endIndex": len(item["bars"]) - 1,
+                "startIndex": CONTEXT_BARS, "endIndex": CONTEXT_BARS + len(item["trainingBars"]) - 1,
+                "contextBars": CONTEXT_BARS,
                 "confidence": item["score"], "patternScore": item["score"], "bottomScore": None,
                 "reviewStatus": "pending", "status": "待审核", "autoEligible": False,
                 "provider": "东方财富", "dataSource": "real", "adjust": "qfq", "period": "daily",
-                "ruleVersion": "heuristic-v1-pending-review", "snapshot": True, "bars": item["bars"],
+                "ruleVersion": "heuristic-v2-context-pending-review", "snapshot": True,
+                "trainingStartIndex": CONTEXT_BARS,
+                "trainingEndIndex": CONTEXT_BARS + len(item["trainingBars"]) - 1,
+                "bars": item["bars"],
             })
             count += 1
             if count == 3:
@@ -244,7 +252,7 @@ def main() -> None:
     counts = {pattern_id: sum(item["patternId"] == pattern_id for item in candidates) for pattern_id in PATTERN_IDS}
     missing = {pattern_id: count for pattern_id, count in counts.items() if count < 3}
     output = {
-        "format": "kline-training-real-sample-bank", "version": 1,
+        "format": "kline-training-real-sample-bank", "version": 2,
         "provider": "东方财富", "adjust": "qfq", "period": "daily",
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "reviewPolicy": "全部候选待人工审核；启发式评分不等同于概率，不自动入库。",
