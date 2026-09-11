@@ -4,7 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#0d1726" />
-    <title>K线形态训练 - 日线 MVP</title>
+    <meta name="description" content="用于训练 K 线形态、模拟交易和复盘的学习工具。" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <title>K线形态训练 - 单人训练版</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -16,7 +19,13 @@
       <div class="top-actions">
         <div class="market-fetch" aria-label="获取真实行情">
           <input id="marketSymbol" type="text" inputmode="numeric" maxlength="8" placeholder="代码 600000 / 510300" aria-label="股票或ETF代码" />
-          <button class="ghost-button" id="fetchMarketButton" type="button">获取真实日线</button>
+          <select id="periodSelect" aria-label="行情周期">
+            <option value="daily">日线</option>
+            <option value="weekly">周线</option>
+            <option value="monthly">月线</option>
+            <option value="yearly">年线</option>
+          </select>
+          <button class="ghost-button" id="fetchMarketButton" type="button">获取东方财富行情</button>
         </div>
         <label class="compact-field">
           <span>训练模式</span>
@@ -27,6 +36,9 @@
         </label>
         <input id="csvFileInput" type="file" accept=".csv,.tsv,.txt" hidden />
         <button class="ghost-button" id="importButton">导入日线 CSV</button>
+        <input id="backupFileInput" type="file" accept="application/json,.json" hidden />
+        <button class="ghost-button" id="exportSessionButton" type="button">导出训练备份</button>
+        <button class="ghost-button" id="importSessionButton" type="button">导入训练备份</button>
         <button class="ghost-button" id="resetButton">重新开始</button>
         <div class="user-box"><span id="userNameLabel">未登录</span><button class="ghost-button" id="loginButton" type="button">用户名登录</button></div>
       </div>
@@ -66,7 +78,7 @@
       <section class="workspace-grid">
         <div class="chart-panel panel">
           <div class="panel-heading chart-heading">
-            <div>
+            <div class="chart-title">
               <div class="identity-row">
                 <h2 id="symbolTitle">训练标的 · 隐藏</h2>
                 <span class="tag" id="timeframeTag">日线</span>
@@ -78,13 +90,18 @@
               <label class="check-field"><input id="chipToggle" type="checkbox" checked /> 估算筹码峰</label>
               <label class="compact-field indicator-field">
                 <span>副图</span>
-                <select id="indicatorSelect">
-                  <option value="none">无</option>
-                  <option value="macd">MACD</option>
-                  <option value="kdj">KDJ</option>
-                  <option value="both" selected>MACD + KDJ</option>
-                </select>
-              </label>
+              <select id="indicatorSelect">
+                <option value="none">无</option>
+                <option value="macd">MACD</option>
+                <option value="kdj">KDJ</option>
+                <option value="both" selected>MACD + KDJ</option>
+              </select>
+            </label>
+            <div class="chart-zoom-controls" aria-label="K线缩放">
+              <button class="icon-button" id="zoomOutButton" type="button" title="缩小，显示更多历史 K 线">−</button>
+              <button class="secondary-button zoom-reset-button" id="zoomResetButton" type="button">全景</button>
+              <button class="icon-button" id="zoomInButton" type="button" title="放大，显示更少 K 线">＋</button>
+              <span id="zoomLabel">65 根</span>
             </div>
           </div>
           <div class="chart-wrap">
@@ -103,13 +120,21 @@
             </div>
             <button class="primary-button" id="collectSampleButton" type="button">收藏到训练库</button>
           </section>
+          <section class="result-stats" id="resultStats" hidden aria-label="训练复盘结果">
+            <div><span>本局收益率</span><strong id="resultReturnValue">—</strong></div>
+            <div><span>最大回撤</span><strong id="resultDrawdownValue">—</strong></div>
+            <div><span>胜率</span><strong id="resultWinRateValue">—</strong></div>
+            <div><span>交易次数</span><strong id="resultTradeCountValue">—</strong></div>
+            <div><span>手续费</span><strong id="resultFeeValue">—</strong></div>
+            <div><span>已实现盈亏</span><strong id="resultRealizedValue">—</strong></div>
+          </section>
           <div class="legend-row">
             <span><i class="legend-candle up"></i>上涨</span>
             <span><i class="legend-candle down"></i>下跌</span>
             <span><i class="legend-line ma5"></i>MA5</span>
             <span><i class="legend-line ma20"></i>MA20</span>
             <span><i class="legend-line ma60"></i>MA60</span>
-            <span class="legend-note">红涨绿跌 · 筹码峰为量价估算 · 演示费率可在配置中调整</span>
+            <span class="legend-note">红涨绿跌 · 筹码峰为量价估算 · 费用规则：佣金最低 5 元，按训练费率计算</span>
           </div>
         </div>
 
@@ -129,6 +154,14 @@
             <label class="number-field">
               <span>交易数量（100 股整数倍）</span>
               <input id="quantityInput" type="number" min="100" step="100" value="10000" />
+            </label>
+            <label class="compact-field trading-rule-field">
+              <span>交易规则</span>
+              <select id="tradingRuleSelect">
+                <option value="a-share">A股 · T+1</option>
+                <option value="etf-t1">ETF · T+1</option>
+                <option value="etf-t0">ETF · T+0</option>
+              </select>
             </label>
             <div class="quick-position" aria-label="快捷仓位">
               <div class="quick-position-row">
@@ -195,6 +228,7 @@
           <div class="replay-actions">
             <button class="secondary-button" id="previousButton">上一根</button>
             <button class="primary-button" id="nextButton">下一根 K 线 <kbd>空格</kbd></button>
+            <button class="secondary-button" id="finishButton">结束训练</button>
           </div>
         </section>
 
@@ -246,6 +280,7 @@
             <input id="patternSearch" type="search" placeholder="输入形态名称" />
           </label>
           <button class="primary-button" id="randomPatternButton" title="随机选择一个形态知识卡，不会改变当前训练行情">随机选择知识模板</button>
+          <button class="primary-button" id="randomSampleButton" title="从已审核真实样本中随机抽取一段行情开始训练">随机抽取训练片段</button>
           <button class="secondary-button" id="scanSamplesButton" title="扫描当前已加载的真实行情或本地 CSV">扫描候选片段</button>
         </div>
         <div class="selected-pattern" id="selectedPattern">
@@ -290,5 +325,12 @@
 
     <script src="library.js"></script>
     <script src="app.js"></script>
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker.register("./sw.js").catch(() => {});
+        });
+      }
+    </script>
   </body>
 </html>

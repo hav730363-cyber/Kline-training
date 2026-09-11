@@ -1,0 +1,19 @@
+{
+  "name": "K线形态训练",
+  "short_name": "K线训练",
+  "description": "K线形态训练、模拟交易和复盘工具",
+  "lang": "zh-CN",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f5f7fb",
+  "theme_color": "#0d1726",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

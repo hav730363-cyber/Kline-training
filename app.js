@@ -2,16 +2,23 @@ const initialCash = 1_000_000;
 const demoSymbol = "DEMO-ETF";
 const commissionRate = 0.0003;
 const stampDutyRate = 0.0005;
+const transferFeeRate = 0.00001;
 const minCommission = 5;
+const feeRuleVersion = "中国市场训练费率-v1（佣金0.03%最低5元；A股卖出印花税0.05%；过户费0.001%）";
 const demoHistoryBars = 250;
 const demoTrainingBars = 180;
 const initialVisibleBars = 41;
+const defaultChartBars = 65;
+const minChartBars = 20;
+const maxChartBars = 240;
 
 const $ = (id) => document.getElementById(id);
 const state = {
   bars: makeDemoBars(demoHistoryBars + demoTrainingBars),
   symbol: demoSymbol,
   dataSource: "demo",
+  code: "DEMO",
+  dataMeta: { provider: "内置演示", adjust: "qfq", period: "daily", fetchedAt: null, rawCount: demoHistoryBars + demoTrainingBars, droppedCount: 0 },
   trainingStartIndex: demoHistoryBars,
   trainingEndIndex: demoHistoryBars + demoTrainingBars - 1,
   currentIndex: demoHistoryBars + initialVisibleBars - 1,
@@ -32,6 +39,9 @@ const state = {
   trainingPatternIds: loadTrainingPatternIds(),
   candidateSamples: loadCandidateSamples(),
   collectedSamples: loadCollectedSamples(),
+  tradingRule: "a-share",
+  chartBars: defaultChartBars,
+  chartOffset: 0,
 };
 
 function patternLibrary() {
@@ -82,6 +92,23 @@ function loadCandidateSamples() {
 
 function saveCandidateSamples() {
   try { localStorage.setItem("kline-candidate-samples", JSON.stringify(state.candidateSamples)); } catch (_) { /* 浏览器可能禁用本地存储 */ }
+}
+
+async function loadRealSampleBank() {
+  try {
+    const response = await fetch("./sample_bank.json", { cache: "no-store" });
+    if (!response.ok) return;
+    const payload = await response.json();
+    if (payload?.format !== "kline-training-real-sample-bank" || !Array.isArray(payload.samples)) return;
+    const merged = [...state.candidateSamples, ...payload.samples.map((sample) => ({
+      ...sample, reviewStatus: sample.reviewStatus || "pending", status: sample.status || "待审核", snapshot: true,
+    }))];
+    state.candidateSamples = [...new Map(merged.map((sample) => [sample.key, sample])).values()]
+      .sort((a, b) => (Number(b.confidence) || 0) - (Number(a.confidence) || 0)).slice(0, 400);
+    saveCandidateSamples();
+    $("candidateScanHint").textContent = `已载入东方财富真实候选样本库：${payload.sampleCount || payload.samples.length} 个片段，均需人工审核后进入训练库。`;
+    renderLibrary();
+  } catch (_) { /* 静态部署尚未上传样本文件时不影响基础训练 */ }
 }
 
 function loadUserName() {
@@ -167,6 +194,44 @@ function formatIndicatorPrice(value) { return value == null ? "—" : formatPric
 function formatDate(date) { return date.toISOString().slice(0, 10); }
 function round(value, digits = 2) { return Number(value.toFixed(digits)); }
 
+function validateBars(inputBars, minimum = 70) {
+  const rawCount = Array.isArray(inputBars) ? inputBars.length : 0;
+  const sorted = (Array.isArray(inputBars) ? inputBars : []).filter((bar) => bar && bar.date instanceof Date && !Number.isNaN(bar.date.getTime()))
+    .map((bar) => ({
+      date: new Date(bar.date),
+      open: Number(bar.open), high: Number(bar.high), low: Number(bar.low), close: Number(bar.close), volume: Number(bar.volume),
+    }))
+    .filter((bar) => [bar.open, bar.high, bar.low, bar.close, bar.volume].every(Number.isFinite)
+      && bar.open > 0 && bar.high > 0 && bar.low > 0 && bar.close > 0 && bar.volume >= 0
+      && bar.low <= Math.min(bar.open, bar.close) && bar.high >= Math.max(bar.open, bar.close))
+    .sort((a, b) => a.date - b.date);
+  const unique = sorted.filter((bar, index) => index === 0 || formatDate(bar.date) !== formatDate(sorted[index - 1].date));
+  const result = { bars: unique, rawCount, validCount: unique.length, droppedCount: rawCount - unique.length, duplicateCount: sorted.length - unique.length };
+  if (unique.length < minimum) throw new Error(`有效 K 线只有 ${unique.length} 根，至少需要 ${minimum} 根；已拒绝不完整数据。`);
+  return result;
+}
+
+function updateDataMeta(meta = {}) {
+  state.dataMeta = {
+    provider: meta.provider || (state.dataSource === "demo" ? "内置演示" : "本地文件"),
+    adjust: meta.adjust || "qfq",
+    period: meta.period || "daily",
+    fetchedAt: meta.fetchedAt || new Date().toISOString(),
+    rawCount: Number(meta.rawCount || state.bars.length),
+    validCount: Number(meta.validCount || state.bars.length),
+    droppedCount: Number(meta.droppedCount || 0),
+    duplicateCount: Number(meta.duplicateCount || 0),
+  };
+}
+
+function dataMetaLabel() {
+  const meta = state.dataMeta || {};
+  const when = meta.fetchedAt ? new Date(meta.fetchedAt).toLocaleString("zh-CN") : "—";
+  const adjust = meta.adjust === "qfq" ? "前复权" : meta.adjust === "hfq" ? "后复权" : "不复权";
+  const period = { daily: "日线", weekly: "周线", monthly: "月线", yearly: "年线" }[meta.period] || meta.period || "未知周期";
+  return `${meta.provider || "未知来源"} · ${adjust} · ${period} · ${meta.validCount || state.bars.length} 根有效 K 线 · 更新于 ${when}`;
+}
+
 function sma(values, period, index) {
   if (index < period - 1) return null;
   const slice = values.slice(index - period + 1, index + 1);
@@ -212,11 +277,54 @@ function trainingLength() { return state.trainingEndIndex - state.trainingStartI
 function shownBarCount() { return state.currentIndex - state.trainingStartIndex + 1; }
 function firstTrainingDecisionIndex() { return state.trainingStartIndex + initialVisibleBars - 1; }
 function heldQty() { return state.lots.reduce((sum, lot) => sum + lot.qty, 0); }
-function availableQty() { return state.lots.filter((lot) => lot.index < state.currentIndex).reduce((sum, lot) => sum + lot.qty, 0); }
+function availableQty() {
+  const tPlusZero = state.tradingRule === "etf-t0";
+  return state.lots.filter((lot) => tPlusZero ? lot.index <= state.currentIndex : lot.index < state.currentIndex).reduce((sum, lot) => sum + lot.qty, 0);
+}
 function positionValue() { return heldQty() * currentBar().close; }
 function equity() { return state.cash + positionValue(); }
 function returnRate() { return ((equity() - initialCash) / initialCash) * 100; }
 function floatingPnl() { return heldQty() * (currentBar().close - state.avgCost); }
+
+function transactionFees(side, amount) {
+  const commission = Math.max(minCommission, amount * commissionRate);
+  const stampDuty = side === "sell" && state.tradingRule === "a-share" ? amount * stampDutyRate : 0;
+  const transferFee = amount * transferFeeRate;
+  return { commission, stampDuty, transferFee, total: commission + stampDuty + transferFee };
+}
+
+function tradingRuleLabel() {
+  return state.tradingRule === "etf-t0" ? "ETF · T+0" : state.tradingRule === "etf-t1" ? "ETF · T+1" : "A股 · T+1";
+}
+
+function currentInstrumentBlocked() {
+  const name = String(state.symbol || "").toUpperCase();
+  const bar = currentBar();
+  if (/\bST|退市|退$/.test(name)) return "训练库已排除 ST/退市标的。";
+  if (!bar || bar.volume <= 0) return "当前 K 线成交量为 0，按停牌处理，不能成交。";
+  return "";
+}
+
+function priceLimitRate() {
+  const code = String(state.code || state.symbol || "");
+  if (/^(300|301|688|689)/.test(code)) return 0.2;
+  if (/^8/.test(code)) return 0.3;
+  return 0.1;
+}
+
+function limitLocked(side) {
+  if (state.dataSource === "demo" || state.currentIndex < 1) return false;
+  const bar = currentBar();
+  const previous = state.bars[state.currentIndex - 1];
+  if (!bar || !previous || previous.close <= 0) return false;
+  const change = (bar.close - previous.close) / previous.close;
+  const limit = priceLimitRate();
+  const atHigh = Math.abs(bar.close - bar.high) <= Math.max(bar.close * 0.0001, 0.01);
+  const atLow = Math.abs(bar.close - bar.low) <= Math.max(bar.close * 0.0001, 0.01);
+  if (side === "buy" && change >= limit * 0.995 && atHigh) return true;
+  if (side === "sell" && change <= -limit * 0.995 && atLow) return true;
+  return false;
+}
 
 function ratioLabel(divisor) {
   if (divisor === 1) return "全仓";
@@ -231,7 +339,7 @@ function affordableBuyQty(divisor) {
   let qty = Math.floor(budget / price / 100) * 100;
   while (qty > 0) {
     const amount = qty * price;
-    const fee = Math.max(minCommission, amount * commissionRate);
+    const fee = transactionFees("buy", amount).total;
     if (amount + fee <= budget && amount + fee <= state.cash) return qty;
     qty -= 100;
   }
@@ -261,19 +369,21 @@ function trade(side) {
   if (state.finished) return;
   const qty = Number($("quantityInput").value);
   const price = currentBar().close;
+  const blocked = currentInstrumentBlocked();
+  if (blocked) return setHint(blocked, true);
+  if (limitLocked(side)) return setHint(side === "buy" ? "当前收盘接近涨停且封板，按涨跌停规则不能买入。" : "当前收盘接近跌停且封板，按涨跌停规则不能卖出。", true);
   if (!Number.isInteger(qty) || qty < 100 || qty % 100 !== 0) return setHint("数量必须是 100 股的整数倍。", true);
   const amount = qty * price;
-  const commission = Math.max(minCommission, amount * commissionRate);
+  const fees = transactionFees(side, amount);
   if (side === "buy") {
-    if (state.cash < amount + commission) return setHint("可用现金不足，无法完成这笔买入。", true);
-    state.cash -= amount + commission;
-    state.lots.push({ index: state.currentIndex, qty, price });
-    state.trades.push({ side, qty, price, fee: commission, cash: state.cash, index: state.currentIndex });
-    setHint("买入成功；本日买入数量将在下一根日 K 线后可卖。", false);
+    if (state.cash < amount + fees.total) return setHint("可用现金不足，无法完成这笔买入。", true);
+    state.cash -= amount + fees.total;
+    state.lots.push({ index: state.currentIndex, qty, price, feePerShare: fees.total / qty });
+    state.trades.push({ side, qty, price, fee: fees.total, commission: fees.commission, stampDuty: fees.stampDuty, transferFee: fees.transferFee, feeRuleVersion, cash: state.cash, index: state.currentIndex });
+    setHint(`${tradingRuleLabel()}买入成功；${state.tradingRule === "etf-t0" ? "本根 K 线即可卖出。" : "下一根 K 线后可卖。"}`, false);
   } else {
-    if (availableQty() < qty) return setHint("可卖数量不足，A 股模式执行 T+1。", true);
-    const stampDuty = amount * stampDutyRate;
-    state.cash += amount - commission - stampDuty;
+    if (availableQty() < qty) return setHint(`可卖数量不足，${tradingRuleLabel()}执行${state.tradingRule === "etf-t0" ? "T+0" : "T+1"}。`, true);
+    state.cash += amount - fees.total;
     let remaining = qty;
     for (const lot of state.lots) {
       const used = Math.min(lot.qty, remaining);
@@ -282,8 +392,8 @@ function trade(side) {
       if (remaining === 0) break;
     }
     state.lots = state.lots.filter((lot) => lot.qty > 0);
-    state.trades.push({ side, qty, price, fee: commission + stampDuty, cash: state.cash, index: state.currentIndex });
-    setHint("卖出成功，已扣除演示手续费和卖出印花税。", false);
+    state.trades.push({ side, qty, price, fee: fees.total, commission: fees.commission, stampDuty: fees.stampDuty, transferFee: fees.transferFee, feeRuleVersion, cash: state.cash, index: state.currentIndex });
+    setHint(`卖出成功，已扣除佣金${fees.stampDuty ? "和印花税" : ""}。`, false);
   }
   updateAverageCost();
   render();
@@ -312,55 +422,73 @@ function resetTradingSession() {
   state.trades = [];
   state.avgCost = 0;
   state.finished = false;
+  state.chartBars = defaultChartBars;
+  state.chartOffset = 0;
 }
 
 async function fetchMarketData() {
   const input = $("marketSymbol");
   const button = $("fetchMarketButton");
   const rawSymbol = input.value.trim();
+  const period = $("periodSelect").value || "daily";
   if (!rawSymbol) return setMarketHint("请输入 6 位 A 股或场内 ETF 代码，例如 600000。", true);
   button.disabled = true;
   button.textContent = "获取中…";
-  setMarketHint("正在获取真实日线，请稍候…");
+  setMarketHint(`正在获取东方财富${period === "daily" ? "日" : period === "weekly" ? "周" : period === "monthly" ? "月" : "年"}线前复权数据，请稍候…`);
   try {
-    const response = await fetch(`/api/market/daily?symbol=${encodeURIComponent(rawSymbol)}&limit=1000&adjust=qfq`);
+    const response = await fetch(`/api/market/daily?symbol=${encodeURIComponent(rawSymbol)}&limit=1000&adjust=qfq&period=${encodeURIComponent(period)}`);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "服务端返回错误。");
-    const bars = payload.bars.map((row) => ({
+    const parsedBars = payload.bars.map((row) => ({
       date: new Date(`${row.date}T00:00:00`),
       open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close), volume: Number(row.volume),
-    })).filter((bar) => !Number.isNaN(bar.date.getTime()));
-    if (bars.length < 70) throw new Error("有效日线不足 70 根。");
+    }));
+    const quality = validateBars(parsedBars);
+    const bars = quality.bars;
     state.bars = bars;
     state.symbol = payload.symbol;
+    state.code = payload.code || rawSymbol.replace(/^(sh|sz)/i, "");
     state.dataSource = "real";
-    state.candidateSamples = [];
-    saveCandidateSamples();
+    updateDataMeta({ ...payload, ...quality, validCount: bars.length });
     state.trainingStartIndex = Math.max(0, bars.length - demoTrainingBars);
     state.trainingEndIndex = bars.length - 1;
     resetTradingSession();
-    $("dataStatus").textContent = `已获取 ${state.symbol}：${bars.length} 根真实日线；`;
-    const fetchedAt = payload.fetchedAt ? new Date(payload.fetchedAt).toLocaleString("zh-CN") : "刚刚";
-    setMarketHint(`数据源：${payload.provider} · 前复权 · 获取于 ${fetchedAt}。`);
+    $("periodSelect").value = period;
+    $("timeframeTag").textContent = { daily: "日线", weekly: "周线", monthly: "月线", yearly: "年线" }[period];
+    $("dataStatus").textContent = `已获取 ${state.symbol}：${bars.length} 根真实前复权${period === "daily" ? "日" : period === "weekly" ? "周" : period === "monthly" ? "月" : "年"}线；`;
+    setMarketHint(`${dataMetaLabel()}。${quality.droppedCount ? ` 已剔除 ${quality.droppedCount} 行异常/重复数据。` : " 数据质量检查通过。"}`);
     setHint("真实行情获取成功，已重新开始一局训练。", false);
     render();
   } catch (error) {
     setMarketHint(`获取失败：${error.message}`, true);
   } finally {
     button.disabled = false;
-    button.textContent = "获取真实日线";
+    button.textContent = "获取东方财富行情";
   }
 }
 
 function nextBar() {
   if (state.currentIndex >= state.trainingEndIndex) {
-    state.finished = true;
-    render();
+    finishTraining();
     return;
   }
   state.currentIndex += 1;
-  if (state.currentIndex >= state.trainingEndIndex) state.finished = true;
+  if (state.currentIndex >= state.trainingEndIndex) {
+    finishTraining();
+    return;
+  }
   setHint("先观察当前走势，再决定是否交易。", false);
+  render();
+}
+
+function finishTraining() {
+  if (state.finished) return;
+  state.currentIndex = state.trainingEndIndex;
+  state.finished = true;
+  // 结束后展示完整训练片段；过多 K 线由 drawChart 自动切换为连续走势线，避免挤成一团。
+  state.chartBars = Math.min(maxChartBars, Math.max(defaultChartBars, trainingLength()));
+  state.chartOffset = 0;
+  setHint("训练已结束，已揭晓形态答案并生成本局复盘数据。", false);
   render();
 }
 
@@ -373,7 +501,10 @@ function previousBar() {
 function handleKeyboardShortcut(event) {
   if (event.code !== "Space" || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
   const target = event.target;
-  if (target instanceof Element && target.closest("input, textarea, select, button, [contenteditable='true']")) return;
+  const element = target instanceof Element ? target : null;
+  // 输入框、下拉框和复选框保留浏览器原生空格行为；按钮则阻止空格默认 click，
+  // 否则交易后焦点仍停留在买卖按钮上，按一次空格会再次提交同一笔交易。
+  if (element?.closest("input, textarea, select, [contenteditable='true']")) return;
   event.preventDefault();
   nextBar();
 }
@@ -443,18 +574,141 @@ async function importCsv(file) {
   try {
     const text = await file.text();
     const bars = parseDailyCsv(text);
-    state.bars = bars; state.symbol = file.name.replace(/\.[^.]+$/, ""); state.dataSource = "imported";
-    state.candidateSamples = [];
-    saveCandidateSamples();
+    const quality = validateBars(bars);
+    state.bars = quality.bars; state.symbol = file.name.replace(/\.[^.]+$/, ""); state.code = "LOCAL"; state.dataSource = "imported";
+    updateDataMeta({ provider: "本地 CSV", adjust: "qfq", period: "daily", ...quality, fetchedAt: new Date().toISOString() });
     state.trainingStartIndex = Math.max(0, bars.length - demoTrainingBars);
-    state.trainingEndIndex = bars.length - 1;
+    state.trainingEndIndex = state.bars.length - 1;
     resetTradingSession();
-    $("dataStatus").textContent = `已导入 ${state.symbol}：${bars.length} 根日线；`;
-    setMarketHint("数据源：本地 CSV · 仅用于当前浏览器训练。", false);
+    $("dataStatus").textContent = `已导入 ${state.symbol}：${state.bars.length} 根日线；`;
+    setMarketHint(`${dataMetaLabel()}。本地文件仅用于当前浏览器训练。`, false);
     setHint("数据导入成功，已重新开始一局训练。", false);
     render();
   } catch (error) {
     setHint(`导入失败：${error.message}`, true);
+  }
+}
+
+function downloadJson(filename, data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url; link.download = filename; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function exportSession() {
+  const payload = {
+    format: "kline-training-session",
+    version: 2,
+    exportedAt: new Date().toISOString(),
+    userName: state.userName,
+    symbol: state.symbol,
+    code: state.code,
+    dataSource: state.dataSource,
+    dataMeta: state.dataMeta,
+    bars: state.bars.map((bar) => ({ ...bar, date: formatDate(bar.date) })),
+    trainingStartIndex: state.trainingStartIndex,
+    trainingEndIndex: state.trainingEndIndex,
+    currentIndex: state.currentIndex,
+    cash: state.cash,
+    lots: state.lots,
+    trades: state.trades,
+    avgCost: state.avgCost,
+    finished: state.finished,
+    mode: state.mode,
+    indicator: state.indicator,
+    showChip: state.showChip,
+    showIdentity: state.showIdentity,
+    tradingRule: state.tradingRule,
+    feeRuleVersion,
+    candidateSamples: state.candidateSamples,
+    collectedSamples: state.collectedSamples,
+  };
+  downloadJson(`kline-training-${new Date().toISOString().slice(0, 10)}.json`, payload);
+  setHint("训练备份已导出，可在其他浏览器通过“导入训练备份”恢复。", false);
+}
+
+function saveDraftSession() {
+  try {
+    const draft = {
+      format: "kline-training-draft",
+      savedAt: new Date().toISOString(),
+      userName: state.userName, symbol: state.symbol, code: state.code, dataSource: state.dataSource, dataMeta: state.dataMeta,
+      bars: state.bars.map((bar) => ({ ...bar, date: formatDate(bar.date) })),
+      trainingStartIndex: state.trainingStartIndex, trainingEndIndex: state.trainingEndIndex, currentIndex: state.currentIndex,
+      cash: state.cash, lots: state.lots, trades: state.trades, avgCost: state.avgCost, finished: state.finished,
+      mode: state.mode, indicator: state.indicator, showChip: state.showChip, showIdentity: state.showIdentity, tradingRule: state.tradingRule,
+      selectedPatternId: state.selectedPatternId,
+    };
+    localStorage.setItem("kline-training-draft", JSON.stringify(draft));
+  } catch (_) { /* 本地存储不可用时不影响训练 */ }
+}
+
+function loadDraftSession() {
+  try {
+    const payload = JSON.parse(localStorage.getItem("kline-training-draft"));
+    if (payload?.format !== "kline-training-draft" || !Array.isArray(payload.bars)) return;
+    const age = Date.now() - new Date(payload.savedAt || 0).getTime();
+    if (!Number.isFinite(age) || age > 7 * 24 * 60 * 60 * 1000) return;
+    const parsedBars = payload.bars.map((row) => ({ ...row, date: new Date(`${row.date}T00:00:00`) }));
+    const quality = validateBars(parsedBars);
+    state.bars = quality.bars; state.symbol = String(payload.symbol || demoSymbol); state.code = String(payload.code || "LOCAL"); state.userName = String(payload.userName || state.userName || "").slice(0, 20);
+    state.dataSource = payload.dataSource || "demo"; updateDataMeta({ ...(payload.dataMeta || {}), ...quality });
+    state.trainingStartIndex = Math.max(0, Math.min(Number(payload.trainingStartIndex) || 0, state.bars.length - 1));
+    state.trainingEndIndex = Math.max(state.trainingStartIndex, Math.min(Number(payload.trainingEndIndex) || state.bars.length - 1, state.bars.length - 1));
+    state.currentIndex = Math.max(firstTrainingDecisionIndex(), Math.min(Number(payload.currentIndex) || state.trainingStartIndex, state.trainingEndIndex));
+    state.cash = Number(payload.cash) || initialCash; state.lots = Array.isArray(payload.lots) ? payload.lots : []; state.trades = Array.isArray(payload.trades) ? payload.trades : [];
+    state.avgCost = Number(payload.avgCost) || 0; state.finished = Boolean(payload.finished); state.mode = ["naked", "daily"].includes(payload.mode) ? payload.mode : "naked";
+    state.indicator = ["none", "macd", "kdj", "both"].includes(payload.indicator) ? payload.indicator : "both"; state.showChip = payload.showChip !== false;
+    state.showIdentity = Boolean(payload.showIdentity); state.tradingRule = ["a-share", "etf-t1", "etf-t0"].includes(payload.tradingRule) ? payload.tradingRule : "a-share";
+    state.selectedPatternId = payload.selectedPatternId || null;
+    $("modeSelect").value = state.mode; $("indicatorSelect").value = state.indicator; $("tradingRuleSelect").value = state.tradingRule;
+    $("identityToggle").checked = state.showIdentity; $("chipToggle").checked = state.showChip;
+    $("periodSelect").value = state.dataMeta.period || "daily";
+    $("dataStatus").textContent = `已自动恢复 ${state.symbol}：${state.bars.length} 根行情；`;
+    setMarketHint(`${dataMetaLabel()}。已恢复最近 7 天内的未完成训练记录。`, false);
+  } catch (_) { /* 损坏的草稿忽略，用户仍可正常开始新局 */ }
+}
+
+async function importSession(file) {
+  try {
+    const payload = JSON.parse(await file.text());
+    if (payload?.format !== "kline-training-session" || !Array.isArray(payload.bars)) throw new Error("不是有效的 K 线训练备份文件。");
+    const parsedBars = payload.bars.map((row) => ({
+      date: new Date(`${row.date}T00:00:00`), open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close), volume: Number(row.volume),
+    }));
+    const quality = validateBars(parsedBars);
+    state.bars = quality.bars;
+    state.symbol = String(payload.symbol || "导入备份");
+    state.userName = String(payload.userName || state.userName || "").slice(0, 20);
+    state.code = String(payload.code || "LOCAL");
+    state.dataSource = payload.dataSource || "imported";
+    updateDataMeta({ ...(payload.dataMeta || {}), ...quality, validCount: quality.validCount });
+    state.trainingStartIndex = Math.max(0, Math.min(Number(payload.trainingStartIndex) || 0, state.bars.length - 1));
+    state.trainingEndIndex = Math.max(state.trainingStartIndex, Math.min(Number(payload.trainingEndIndex) || state.bars.length - 1, state.bars.length - 1));
+    state.currentIndex = Math.max(firstTrainingDecisionIndex(), Math.min(Number(payload.currentIndex) || state.trainingStartIndex, state.trainingEndIndex));
+    state.cash = Number.isFinite(Number(payload.cash)) ? Number(payload.cash) : initialCash;
+    state.lots = Array.isArray(payload.lots) ? payload.lots : [];
+    state.trades = Array.isArray(payload.trades) ? payload.trades : [];
+    state.avgCost = Number(payload.avgCost) || 0;
+    state.finished = Boolean(payload.finished);
+    state.mode = ["naked", "daily"].includes(payload.mode) ? payload.mode : "naked";
+    state.indicator = ["none", "macd", "kdj", "both"].includes(payload.indicator) ? payload.indicator : "both";
+    state.showChip = payload.showChip !== false;
+    state.showIdentity = Boolean(payload.showIdentity);
+    state.tradingRule = ["a-share", "etf-t1", "etf-t0"].includes(payload.tradingRule) ? payload.tradingRule : "a-share";
+    state.candidateSamples = Array.isArray(payload.candidateSamples) ? payload.candidateSamples : state.candidateSamples;
+    state.collectedSamples = Array.isArray(payload.collectedSamples) ? payload.collectedSamples : state.collectedSamples;
+    if (state.userName) saveUserName(state.userName);
+    saveCandidateSamples(); saveCollectedSamples();
+    $("modeSelect").value = state.mode; $("indicatorSelect").value = state.indicator; $("tradingRuleSelect").value = state.tradingRule; $("identityToggle").checked = state.showIdentity; $("chipToggle").checked = state.showChip;
+    $("periodSelect").value = state.dataMeta.period || "daily";
+    $("dataStatus").textContent = `已恢复 ${state.symbol}：${state.bars.length} 根行情；`;
+    setMarketHint(`${dataMetaLabel()}。训练备份恢复成功。`, false);
+    renderUser(); render();
+  } catch (error) {
+    setHint(`备份导入失败：${error.message}`, true);
   }
 }
 
@@ -577,10 +831,12 @@ function scanCandidateSamples() {
       });
     }
   }
-  state.candidateSamples = candidates.sort((a, b) => b.confidence - a.confidence).slice(0, 40);
+  const merged = [...state.candidateSamples, ...candidates];
+  const unique = [...new Map(merged.map((sample) => [sample.key, sample])).values()];
+  state.candidateSamples = unique.sort((a, b) => b.confidence - a.confidence).slice(0, 200);
   saveCandidateSamples();
   $("candidateScanHint").textContent = state.candidateSamples.length
-    ? `扫描完成：${state.candidateSamples.length} 个候选，当前均需审核${RULE_ENGINE_VALIDATED ? "或按阈值自动入库" : "（规则尚未完成回测）"}。`
+    ? `扫描完成：本次新增 ${candidates.length} 个，累计 ${state.candidateSamples.length} 个候选，当前均需审核${RULE_ENGINE_VALIDATED ? "或按阈值自动入库" : "（规则尚未完成回测）"}。`
     : "未找到同时满足底部逻辑和形态初筛条件的片段，可换一只股票或 ETF。";
   renderLibrary();
 }
@@ -636,6 +892,22 @@ function randomPattern() {
   document.querySelector(`[data-pattern-id="${picked.id}"]`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
+function randomTrainingSample() {
+  const storedCollected = state.collectedSamples.map((sample) => ({ ...sample, status: sample.status || "已审核" }));
+  const approved = [...state.candidateSamples, ...storedCollected].filter((sample) => sample.reviewStatus === "approved"
+    && sample.dataSource !== "demo" && sample.provider !== "内置演示"
+    && (sample.snapshot || sample.symbol === state.symbol) && Number.isInteger(sample.startIndex) && Number.isInteger(sample.endIndex)
+    && sample.startIndex >= 0 && sample.endIndex < state.bars.length);
+  if (!approved.length) {
+    setHint("当前没有已审核真实样本。请先获取东方财富行情，扫描候选片段并审核通过。", true);
+    $("candidateScanHint").textContent = "随机训练只从已审核真实样本抽取，不会使用合成行情。";
+    return;
+  }
+  const picked = approved[Math.floor(Math.random() * approved.length)];
+  trainCandidate(picked.key);
+  setHint(`已随机抽取：${picked.patternName} · ${picked.startDate} 至 ${picked.endDate}。`, false);
+}
+
 function initializeLibrary() {
   const categories = [...new Set(patternLibrary().map((pattern) => pattern.category))];
   $("categorySelect").innerHTML = '<option value="all">全部类型</option>' + categories.map((category) => `<option value="${category}">${category}</option>`).join("");
@@ -643,7 +915,10 @@ function initializeLibrary() {
 
 function renderLibrary() {
   const patterns = visibleLibraryPatterns();
-  $("libraryCount").textContent = `${patterns.length} 个模板`;
+  const approved = state.candidateSamples.filter((sample) => sample.reviewStatus === "approved").length
+    + state.collectedSamples.filter((sample) => sample.reviewStatus === "approved").length;
+  const target = patternLibrary().length * 3;
+  $("libraryCount").textContent = `${patterns.length} 个模板 · ${approved}/${target} 个真实样本`;
   const selected = patternLibrary().find((pattern) => pattern.id === state.selectedPatternId);
   $("selectedPattern").innerHTML = selected
     ? `<span>知识模板：${selected.name}</span><small>${selected.category} · ${biasLabel(selected.bias)} · ${selected.rule}（不会改变当前行情）</small>`
@@ -693,10 +968,43 @@ function reviewCandidate(key, decision) {
 }
 
 function trainCandidate(key) {
-  const candidate = findCandidate(key);
-  if (!candidate) return;
-  state.trainingStartIndex = candidate.startIndex;
-  state.trainingEndIndex = candidate.endIndex;
+  const candidate = findCandidate(key) || state.collectedSamples.find((sample) => sample.key === key);
+  if (!candidate) return setHint("没有找到这个样本片段，请刷新样本库后重试。", true);
+
+  const isSnapshot = candidate.snapshot === true;
+  if (isSnapshot) {
+    const minimumSnapshotBars = Math.max(initialVisibleBars, 45);
+    if (!Array.isArray(candidate.bars) || candidate.bars.length < minimumSnapshotBars) {
+      return setHint("这个样本缺少完整 K 线数据，不能开始训练。请重新载入样本库。", true);
+    }
+    try {
+      const normalized = candidate.bars.map((bar) => ({
+        ...bar,
+        date: bar.date instanceof Date ? bar.date : new Date(`${String(bar.date).slice(0, 10)}T00:00:00`),
+      }));
+      // 样本片段本身已经是经过筛选的训练窗口，最低长度按观察窗口校验；
+      // 直接导入整段行情仍然使用 validateBars 的 70 根默认门槛。
+      const quality = validateBars(normalized, minimumSnapshotBars);
+      state.bars = quality.bars;
+      state.symbol = candidate.symbol;
+      state.code = candidate.code || "LOCAL";
+      state.dataSource = "real";
+      updateDataMeta({ provider: candidate.provider || "东方财富", adjust: candidate.adjust || "qfq", period: candidate.period || "daily", ...quality, fetchedAt: candidate.fetchedAt || new Date().toISOString() });
+    } catch (error) {
+      return setHint(`样本数据校验失败：${error.message}`, true);
+    }
+    state.trainingStartIndex = 0;
+    state.trainingEndIndex = state.bars.length - 1;
+  } else {
+    if (candidate.symbol !== state.symbol) return setHint("该样本属于其他标的，请先获取对应代码的真实行情后再训练。", true);
+    const startIndex = Number(candidate.startIndex);
+    const endIndex = Number(candidate.endIndex);
+    if (!Number.isInteger(startIndex) || !Number.isInteger(endIndex) || startIndex < 0 || endIndex < startIndex || endIndex >= state.bars.length) {
+      return setHint("当前行情中没有完整的该样本片段，请重新扫描。", true);
+    }
+    state.trainingStartIndex = startIndex;
+    state.trainingEndIndex = endIndex;
+  }
   state.selectedPatternId = candidate.patternId;
   state.showIdentity = false;
   state.mode = "naked";
@@ -704,8 +1012,8 @@ function trainCandidate(key) {
   $("identityToggle").checked = false;
   resetTradingSession();
   $("dataStatus").textContent = `训练片段：${candidate.patternName} · ${candidate.startDate} 至 ${candidate.endDate}；`;
-  setMarketHint("候选片段已独立载入，训练中名称和日期仍会隐藏。", false);
-  setHint(`已载入 ${candidate.patternName} 候选片段，可开始独立训练。`, false);
+  setMarketHint(`已载入东方财富真实样本：${candidate.symbol} · 前复权 · 训练中名称和日期仍会隐藏。`, false);
+  setHint(`已载入「${candidate.patternName}」候选片段，可开始独立训练。`, false);
   render();
   $("chartCanvas").scrollIntoView({ behavior: "smooth", block: "center" });
 }
@@ -743,6 +1051,12 @@ function collectCurrentSample() {
     endDate: formatDate(state.bars[state.trainingEndIndex].date),
     patternId: pattern.id,
     patternName: pattern.name,
+    dataSource: state.dataSource,
+    startIndex: state.trainingStartIndex,
+    endIndex: state.trainingEndIndex,
+    provider: state.dataMeta?.provider || sourceLabel(),
+    adjust: state.dataMeta?.adjust || "qfq",
+    period: state.dataMeta?.period || "daily",
     ...review,
   }, ...state.collectedSamples];
   saveCollectedSamples();
@@ -830,29 +1144,51 @@ function escapeHtml(value) {
 
 function drawChart() {
   const canvas = $("chartCanvas");
+  if (!canvas) return;
   const rect = canvas.getBoundingClientRect();
   const ratio = window.devicePixelRatio || 1;
-  canvas.width = rect.width * ratio; canvas.height = rect.height * ratio;
-  const ctx = canvas.getContext("2d"); ctx.scale(ratio, ratio);
-  const width = rect.width, height = rect.height;
+  const parentRect = canvas.parentElement?.getBoundingClientRect();
+  const width = Math.floor(rect.width || parentRect?.width || 0);
+  const height = Math.floor(rect.height || parentRect?.height || 0);
+  // 隐藏标签页或尚未完成布局时不重绘，避免 0 尺寸导致无限 requestAnimationFrame。
+  if (width < 20 || height < 20) return;
+  canvas.width = Math.max(1, Math.floor(width * ratio));
+  canvas.height = Math.max(1, Math.floor(height * ratio));
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   ctx.fillStyle = "#0a1423"; ctx.fillRect(0, 0, width, height);
   const bars = currentBars();
-  const visible = state.finished ? bars : bars.slice(Math.max(0, bars.length - 65));
+  if (!bars.length) {
+    ctx.fillStyle = "#71859f"; ctx.font = "13px Inter, sans-serif"; ctx.fillText("暂无可显示的 K 线", 24, 34);
+    return;
+  }
+  const requestedBars = Number.isFinite(Number(state.chartBars)) ? Math.round(Number(state.chartBars)) : defaultChartBars;
+  const visibleCount = Math.max(1, Math.min(Math.max(Math.min(minChartBars, bars.length), requestedBars), bars.length));
+  const maxOffset = Math.max(0, bars.length - visibleCount);
+  state.chartOffset = Math.max(0, Math.min(Number(state.chartOffset) || 0, maxOffset));
+  const start = Math.max(0, bars.length - visibleCount - state.chartOffset);
+  const visible = bars.slice(start, start + visibleCount);
   const indicators = indicatorData();
-  const firstGlobalIndex = state.currentIndex - visible.length + 1;
+  const firstGlobalIndex = state.trainingStartIndex + start;
   const left = 48, right = 14, top = 22, bottom = 28;
   const chipWidth = state.showChip ? Math.min(132, Math.max(88, width * 0.17)) : 0;
-  const plotRight = width - right - chipWidth;
+  const chartRight = Math.max(left + 80, width - right);
+  const plotRight = state.showChip ? Math.max(left + 80, chartRight - chipWidth - 8) : chartRight;
+  const chartWidth = Math.max(80, plotRight - left);
+  const step = chartWidth / visible.length;
+  // 当 K 线过密时保留相同画布尺寸，改用收盘价走势线，避免柱子挤成一条黑线。
+  const lineOnly = step < 4.5 || visible.length >= 180;
+  $("zoomLabel").textContent = `${visible.length} 根${lineOnly ? " · 走势线" : ""}${state.chartOffset ? ` · 向前 ${state.chartOffset} 根` : ""}`;
+  $("zoomInButton").disabled = requestedBars <= minChartBars;
+  $("zoomOutButton").disabled = requestedBars >= maxChartBars;
   const indicatorHeight = state.indicator === "none" ? 0 : state.indicator === "both" ? 170 : 94;
   const volumeHeight = 72;
-  const priceBottom = height - bottom - volumeHeight - indicatorHeight - 14;
+  const priceBottom = Math.max(top + 100, height - bottom - volumeHeight - indicatorHeight - 14);
   const priceTop = top;
   const high = Math.max(...visible.map((bar) => bar.high));
   const low = Math.min(...visible.map((bar) => bar.low));
   const range = Math.max(high - low, 0.01);
-  const chartWidth = plotRight - left;
-  const step = chartWidth / visible.length;
-  const candleWidth = Math.max(3, Math.min(11, step * .58));
+  const candleWidth = Math.max(2, Math.min(11, step * .58));
   const yPrice = (value) => priceTop + ((high - value) / range) * (priceBottom - priceTop);
   const xBar = (index) => left + step * index + step / 2;
   const gridColor = "rgba(151, 178, 212, .12)";
@@ -862,17 +1198,21 @@ function drawChart() {
     ctx.strokeStyle = gridColor; ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(plotRight, y); ctx.stroke();
     ctx.fillStyle = "#71859f"; ctx.fillText((high - (range / 4) * line).toFixed(2), 6, y + 3);
   }
-  visible.forEach((bar, index) => {
-    const x = xBar(index); const up = bar.close >= bar.open; const color = up ? "#ff7787" : "#65d7b1";
-    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(x, yPrice(bar.high)); ctx.lineTo(x, yPrice(bar.low)); ctx.stroke();
-    const bodyTop = yPrice(Math.max(bar.open, bar.close)); const bodyBottom = yPrice(Math.min(bar.open, bar.close));
-    ctx.fillRect(x - candleWidth / 2, bodyTop, candleWidth, Math.max(1, bodyBottom - bodyTop));
-  });
+  if (lineOnly) {
+    drawIndexedLine(ctx, visible.length, (index) => visible[index].close, "#dce8ff", yPrice, xBar, 1.8);
+  } else {
+    visible.forEach((bar, index) => {
+      const x = xBar(index); const up = bar.close >= bar.open; const color = up ? "#ff7787" : "#65d7b1";
+      ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, yPrice(bar.high)); ctx.lineTo(x, yPrice(bar.low)); ctx.stroke();
+      const bodyTop = yPrice(Math.max(bar.open, bar.close)); const bodyBottom = yPrice(Math.min(bar.open, bar.close));
+      ctx.fillRect(x - candleWidth / 2, bodyTop, candleWidth, Math.max(1, bodyBottom - bodyTop));
+    });
+  }
   drawIndexedLine(ctx, visible.length, (index) => sma(indicators.closes, 5, firstGlobalIndex + index), "#f4c95d", yPrice, xBar);
   drawIndexedLine(ctx, visible.length, (index) => sma(indicators.closes, 20, firstGlobalIndex + index), "#7da8ff", yPrice, xBar);
   drawIndexedLine(ctx, visible.length, (index) => sma(indicators.closes, 60, firstGlobalIndex + index), "#d18cff", yPrice, xBar);
-  if (state.showChip) drawChipProfile(ctx, chipDistribution(visible, currentBar().close), plotRight + 7, width - right, priceTop, priceBottom, yPrice, currentBar().close);
+  if (state.showChip && chartRight - (plotRight + 7) > 20) drawChipProfile(ctx, chipDistribution(visible, currentBar().close), plotRight + 7, chartRight, priceTop, priceBottom, yPrice, currentBar().close);
   const volumeMa120 = visible.map((_, index) => sma(indicators.volumes, 120, firstGlobalIndex + index));
   const volumeMa250 = visible.map((_, index) => sma(indicators.volumes, 250, firstGlobalIndex + index));
   const maxVolume = Math.max(...visible.map((bar) => bar.volume), ...volumeMa120.filter(Number.isFinite), ...volumeMa250.filter(Number.isFinite));
@@ -891,7 +1231,7 @@ function drawChart() {
     { text: `MA120 ${formatVolume(volumeMa120[volumeMa120.length - 1])}`, color: "#f4c95d" },
     { text: `MA250 ${formatVolume(volumeMa250[volumeMa250.length - 1])}`, color: "#7da8ff" },
   ]);
-  if (state.indicator !== "none") drawSubIndicators(ctx, visible.length, firstGlobalIndex, priceBottom + volumeHeight + 8, indicatorHeight - 8, xBar, left, plotRight, indicators);
+  if (state.indicator !== "none" && indicatorHeight > 20) drawSubIndicators(ctx, visible.length, firstGlobalIndex, priceBottom + volumeHeight + 8, indicatorHeight - 8, xBar, left, plotRight, indicators);
   state.trades.filter((item) => item.index >= firstGlobalIndex && item.index <= state.currentIndex).forEach((item) => {
     const localIndex = item.index - firstGlobalIndex;
     const x = xBar(localIndex); const y = item.side === "buy" ? yPrice(visible[localIndex].low) + 11 : yPrice(visible[localIndex].high) - 11;
@@ -903,6 +1243,46 @@ function drawChart() {
   visible.forEach((bar, index) => {
     if (index % Math.max(1, Math.floor(visible.length / 6)) === 0) { ctx.fillStyle = "#71859f"; ctx.fillText(formatDate(bar.date).slice(5), xBar(index) - 14, height - 8); }
   });
+}
+
+function changeChartZoom(delta) {
+  const next = Number(state.chartBars) + Number(delta);
+  state.chartBars = Math.max(minChartBars, Math.min(maxChartBars, Math.round(next)));
+  state.chartOffset = Math.min(state.chartOffset, Math.max(0, currentBars().length - Math.min(state.chartBars, currentBars().length)));
+  window.requestAnimationFrame(drawChart);
+}
+
+function resetChartView() {
+  state.chartBars = defaultChartBars;
+  state.chartOffset = 0;
+  window.requestAnimationFrame(drawChart);
+}
+
+function shiftChartViewport(delta) {
+  const maxOffset = Math.max(0, currentBars().length - Math.min(state.chartBars, currentBars().length));
+  state.chartOffset = Math.max(0, Math.min(maxOffset, state.chartOffset + delta));
+  drawChart();
+}
+
+let chartPointer = null;
+
+function beginChartDrag(event) {
+  chartPointer = { id: event.pointerId, x: event.clientX, offset: state.chartOffset };
+  event.currentTarget.setPointerCapture?.(event.pointerId);
+}
+
+function moveChartDrag(event) {
+  if (!chartPointer || chartPointer.id !== event.pointerId) return;
+  const pixelDelta = event.clientX - chartPointer.x;
+  const rect = event.currentTarget.getBoundingClientRect();
+  const barsPerPixel = Math.max(0.05, state.chartBars / Math.max(rect.width, 1));
+  const maxOffset = Math.max(0, currentBars().length - Math.min(state.chartBars, currentBars().length));
+  state.chartOffset = Math.max(0, Math.min(maxOffset, Math.round(chartPointer.offset + pixelDelta * barsPerPixel)));
+  drawChart();
+}
+
+function endChartDrag(event) {
+  if (chartPointer?.id === event.pointerId) chartPointer = null;
 }
 
 function drawChipProfile(ctx, profile, left, right, top, bottom, yPrice, currentPrice) {
@@ -991,6 +1371,74 @@ function drawKdjPanel(ctx, count, firstIndex, top, height, xBar, left, right, da
   ]);
 }
 
+function sessionStats() {
+  let cash = initialCash;
+  let lots = [];
+  let realized = 0;
+  let fees = 0;
+  let closedTrades = 0;
+  let winningTrades = 0;
+  let peak = initialCash;
+  let maxDrawdown = 0;
+  const start = Math.max(0, state.trainingStartIndex);
+  const end = Math.max(start, state.trainingEndIndex);
+  for (let index = start; index <= end; index += 1) {
+    state.trades.filter((tradeItem) => tradeItem.index === index).forEach((tradeItem) => {
+      const tradeFee = Number(tradeItem.fee) || 0;
+      fees += tradeFee;
+      if (tradeItem.side === "buy") {
+        cash -= tradeItem.qty * tradeItem.price + tradeFee;
+        lots.push({ qty: tradeItem.qty, price: tradeItem.price, feePerShare: tradeFee / tradeItem.qty });
+      } else {
+        cash += tradeItem.qty * tradeItem.price - tradeFee;
+        let remaining = tradeItem.qty;
+        let tradePnl = 0;
+        while (remaining > 0 && lots.length) {
+          const lot = lots[0];
+          const used = Math.min(lot.qty, remaining);
+          tradePnl += (tradeItem.price - lot.price - lot.feePerShare) * used;
+          lot.qty -= used;
+          remaining -= used;
+          if (lot.qty <= 0) lots.shift();
+        }
+        tradePnl -= tradeFee;
+        realized += tradePnl;
+        closedTrades += 1;
+        if (tradePnl > 0) winningTrades += 1;
+      }
+    });
+    const bar = state.bars[index];
+    const mark = bar ? lots.reduce((sum, lot) => sum + lot.qty * bar.close, 0) : 0;
+    const total = cash + mark;
+    peak = Math.max(peak, total);
+    maxDrawdown = Math.max(maxDrawdown, peak ? (peak - total) / peak : 0);
+  }
+  const finalBar = state.bars[end] || currentBar();
+  const finalEquity = cash + lots.reduce((sum, lot) => sum + lot.qty * finalBar.close, 0);
+  return {
+    returnRate: ((finalEquity - initialCash) / initialCash) * 100,
+    maxDrawdown: maxDrawdown * 100,
+    winRate: closedTrades ? (winningTrades / closedTrades) * 100 : 0,
+    tradeCount: state.trades.length,
+    fees,
+    realized,
+  };
+}
+
+function renderResultStats() {
+  const visible = state.finished;
+  $("resultStats").hidden = !visible;
+  if (!visible) return;
+  const stats = sessionStats();
+  $("resultReturnValue").textContent = `${stats.returnRate >= 0 ? "+" : ""}${stats.returnRate.toFixed(2)}%`;
+  $("resultReturnValue").style.color = stats.returnRate >= 0 ? "var(--accent)" : "var(--red)";
+  $("resultDrawdownValue").textContent = `${stats.maxDrawdown.toFixed(2)}%`;
+  $("resultWinRateValue").textContent = stats.tradeCount && state.trades.some((item) => item.side === "sell") ? `${stats.winRate.toFixed(0)}%` : "—";
+  $("resultTradeCountValue").textContent = `${stats.tradeCount} 笔`;
+  $("resultFeeValue").textContent = formatMoney(stats.fees);
+  $("resultRealizedValue").textContent = formatMoney(stats.realized);
+}
+
 function render() {
   const bar = currentBar(); const qty = heldQty(); const equityNow = equity();
   $("equityValue").textContent = formatMoney(equityNow); $("cashValue").textContent = formatMoney(state.cash); $("positionValue").textContent = formatMoney(positionValue());
@@ -1001,6 +1449,7 @@ function render() {
   $("barProgress").textContent = `第 ${progress} 根 / ${total} 根`; $("stepCount").textContent = `${progress} / ${total}`;
   $("progressBar").style.width = `${(progress / total) * 100}%`;
   const identityVisible = state.showIdentity || state.finished || state.mode === "daily";
+  $("timeframeTag").textContent = { daily: "日线", weekly: "周线", monthly: "月线", yearly: "年线" }[state.dataMeta?.period] || "日线";
   $("symbolTitle").textContent = identityVisible ? `${state.symbol} · ${sourceLabel()}` : "训练标的 · 隐藏";
   $("dateLabel").textContent = identityVisible ? `${formatDate(bar.date)} · 当前收盘 ${formatPrice(bar.close)}` : "日期已隐藏 · 训练结束后揭晓";
   const indicators = indicatorData(); const i = state.currentIndex;
@@ -1017,9 +1466,11 @@ function render() {
   $("tradeCount").textContent = `${state.trades.length} 笔`; $("nextButton").disabled = state.finished; $("previousButton").disabled = state.currentIndex <= firstTrainingDecisionIndex() || state.trades.some((item) => item.index > state.currentIndex - 1);
   $("finishOverlay").hidden = true;
   renderResultReveal();
+  renderResultStats();
   $("tradeLogBody").innerHTML = state.trades.length ? state.trades.slice().reverse().map((item) => `<tr><td>${formatDate(state.bars[item.index].date)}</td><td class="${item.side === "buy" ? "buy-text" : "sell-text"}">${item.side === "buy" ? "买入" : "卖出"}</td><td>${formatPrice(item.price)}</td><td>${item.qty.toLocaleString()}</td><td>${formatMoney(item.fee)}</td><td>${formatMoney(item.cash)}</td></tr>`).join("") : '<tr class="empty-row"><td colspan="6">本局还没有交易记录</td></tr>';
   drawChart();
   renderLibrary();
+  saveDraftSession();
 }
 
 function renderResultReveal() {
@@ -1048,8 +1499,12 @@ $("buyButton").addEventListener("click", () => trade("buy"));
 $("sellButton").addEventListener("click", () => trade("sell"));
 document.querySelectorAll("[data-quick-side]").forEach((button) => button.addEventListener("click", () => quickPosition(button.dataset.quickSide, Number(button.dataset.divisor))));
 $("nextButton").addEventListener("click", nextBar); $("previousButton").addEventListener("click", previousBar); $("resetButton").addEventListener("click", reset);
+$("finishButton").addEventListener("click", finishTraining);
 $("importButton").addEventListener("click", () => $("csvFileInput").click());
 $("csvFileInput").addEventListener("change", (event) => { const [file] = event.target.files; if (file) importCsv(file); event.target.value = ""; });
+$("exportSessionButton").addEventListener("click", exportSession);
+$("importSessionButton").addEventListener("click", () => $("backupFileInput").click());
+$("backupFileInput").addEventListener("change", (event) => { const [file] = event.target.files; if (file) importSession(file); event.target.value = ""; });
 $("fetchMarketButton").addEventListener("click", fetchMarketData);
 $("marketSymbol").addEventListener("keydown", (event) => { if (event.key === "Enter") fetchMarketData(); });
 $("loginButton").addEventListener("click", openLogin);
@@ -1061,12 +1516,22 @@ $("identityToggle").addEventListener("change", (event) => { state.showIdentity =
 $("chipToggle").addEventListener("change", (event) => { state.showChip = event.target.checked; drawChart(); });
 $("indicatorSelect").addEventListener("change", (event) => { state.indicator = event.target.value; render(); });
 $("modeSelect").addEventListener("change", (event) => { state.mode = event.target.value; state.showIdentity = state.mode === "daily"; $("identityToggle").checked = state.showIdentity; render(); });
+$("tradingRuleSelect").addEventListener("change", (event) => { state.tradingRule = event.target.value; setHint(`${tradingRuleLabel()}已启用：${state.tradingRule === "etf-t0" ? "当根 K 线可回转交易。" : "买入后下一根 K 线可卖。"}`, false); render(); });
 $("librarySelect").addEventListener("change", (event) => { state.libraryView = event.target.value; state.selectedPatternId = null; renderLibrary(); });
 $("categorySelect").addEventListener("change", (event) => { state.libraryCategory = event.target.value; state.selectedPatternId = null; renderLibrary(); });
 $("patternSearch").addEventListener("input", (event) => { state.patternSearch = event.target.value; renderLibrary(); });
 $("randomPatternButton").addEventListener("click", randomPattern);
+$("randomSampleButton").addEventListener("click", randomTrainingSample);
 $("scanSamplesButton").addEventListener("click", scanCandidateSamples);
 $("collectSampleButton").addEventListener("click", collectCurrentSample);
+$("zoomInButton").addEventListener("click", () => changeChartZoom(-10));
+$("zoomOutButton").addEventListener("click", () => changeChartZoom(10));
+$("zoomResetButton").addEventListener("click", resetChartView);
+$("chartCanvas").addEventListener("wheel", (event) => { event.preventDefault(); changeChartZoom(event.deltaY > 0 ? 10 : -10); }, { passive: false });
+$("chartCanvas").addEventListener("pointerdown", beginChartDrag);
+$("chartCanvas").addEventListener("pointermove", moveChartDrag);
+$("chartCanvas").addEventListener("pointerup", endChartDrag);
+$("chartCanvas").addEventListener("pointercancel", endChartDrag);
 $("libraryGrid").addEventListener("click", (event) => {
   const card = event.target.closest("[data-pattern-id]");
   if (!card) return;
@@ -1084,5 +1549,7 @@ $("candidateSampleList").addEventListener("click", (event) => {
 document.addEventListener("keydown", handleKeyboardShortcut);
 window.addEventListener("resize", drawChart);
 initializeLibrary();
+loadDraftSession();
 renderUser();
 render();
+loadRealSampleBank();
