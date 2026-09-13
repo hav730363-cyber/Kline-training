@@ -1,1 +1,2 @@
-# The MVP uses only Python's standard library.
+# BaoStock is the primary free historical-market-data provider.
+baostock>=0.9.3

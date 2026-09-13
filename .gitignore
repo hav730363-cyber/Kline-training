@@ -7,4 +7,9 @@ build/
 dist/
 build-*/
 dist-*/
+node_modules/
+.electron-builder-cache/
+asar-inspect/
+electron-test.log
+*.log
 *.spec.bak

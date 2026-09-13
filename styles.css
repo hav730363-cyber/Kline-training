@@ -142,6 +142,13 @@ h2 { font-size: 16px; letter-spacing: -.02em; }
 .collected-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 12px; }
 .collected-heading h3 { font-size: 15px; }
 .collected-heading p { margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.collection-progress { margin-top: 10px; max-width: 620px; }
+.collection-progress-meta { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 11px; }
+.collection-progress-meta strong { color: var(--accent); font-variant-numeric: tabular-nums; }
+.collection-progress progress { display: block; width: 100%; height: 8px; margin-top: 6px; border: 0; border-radius: 999px; overflow: hidden; background: rgba(255,255,255,.08); }
+.collection-progress progress::-webkit-progress-bar { background: rgba(255,255,255,.08); border-radius: 999px; }
+.collection-progress progress::-webkit-progress-value { background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 999px; transition: width .25s ease; }
+.collection-progress progress::-moz-progress-bar { background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 999px; }
 .collected-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .collected-card { padding: 12px; border: 1px solid rgba(159,183,213,.12); border-radius: 9px; background: rgba(255,255,255,.025); }
 .collected-card strong, .collected-card span { display: block; }
@@ -156,9 +163,26 @@ h2 { font-size: 16px; letter-spacing: -.02em; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 18px; background: rgba(4,10,18,.72); backdrop-filter: blur(5px); }
 .modal-backdrop[hidden] { display: none; }
 .login-card { width: min(420px, 100%); padding: 20px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: 0 24px 70px rgba(0,0,0,.35); }
+#collectionProgressModal { display: block; inset: 0; padding: 0; background: transparent; backdrop-filter: none; pointer-events: none; }
+#collectionProgressModal[hidden] { display: none; }
+#collectionProgressModal .collection-progress-card { position: fixed; top: 158px; left: 50%; width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 190px); overflow: auto; transform: translateX(-50%); pointer-events: auto; }
+.collection-progress-card { padding: 22px; border: 1px solid rgba(101,215,177,.28); border-radius: 16px; background: linear-gradient(145deg, rgba(22,43,70,.98), rgba(11,23,41,.98)); box-shadow: 0 24px 80px rgba(0,0,0,.48); }
+.collection-progress-card .panel-heading p { margin-top: 5px; color: var(--muted); font-size: 11px; }
+.collection-modal-progress { margin-top: 20px; }
+.collection-modal-progress progress { display: block; width: 100%; height: 12px; margin-top: 9px; border: 0; border-radius: 999px; overflow: hidden; background: rgba(255,255,255,.08); }
+.collection-modal-progress progress::-webkit-progress-bar { background: rgba(255,255,255,.08); border-radius: 999px; }
+.collection-modal-progress progress::-webkit-progress-value { background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 999px; transition: width .25s ease; }
+.collection-modal-progress progress::-moz-progress-bar { background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 999px; }
+.collection-progress-stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 18px; }
+.collection-progress-stat-grid div { padding: 12px; border: 1px solid rgba(159,183,213,.14); border-radius: 10px; background: rgba(255,255,255,.035); }
+.collection-progress-stat-grid span, .collection-progress-stat-grid strong { display: block; }
+.collection-progress-stat-grid span { color: var(--muted); font-size: 11px; }
+.collection-progress-stat-grid strong { margin-top: 6px; color: var(--accent); font-size: 18px; font-variant-numeric: tabular-nums; }
+.collection-modal-current { min-height: 34px; margin-top: 16px; color: var(--muted); font-size: 11px; line-height: 1.55; word-break: break-all; }
 .icon-button { width: 30px; height: 30px; border: 1px solid var(--border); border-radius: 50%; color: var(--muted); background: transparent; font-size: 21px; line-height: 1; }
 .login-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 @media (max-width: 1100px) { .library-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 680px) { #collectionProgressModal .collection-progress-card { top: 112px; width: calc(100vw - 20px); max-height: calc(100vh - 128px); padding: 16px; }.collection-progress-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 1050px) { .stat-grid { grid-template-columns: repeat(2, 1fr); }.workspace-grid, .bottom-grid { grid-template-columns: 1fr; }.side-column { grid-template-columns: repeat(2, minmax(0, 1fr)); }.bottom-grid .replay-panel { order: 2; }.bottom-grid .log-panel { order: 1; } }
 @media (max-width: 780px) { .library-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.collected-grid { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 680px) { .topbar { padding: 22px 16px 16px; align-items: flex-start; flex-direction: column; }.top-actions { width: 100%; align-items: stretch; flex-wrap: wrap; justify-content: start; }.market-fetch { flex: 1 1 100%; }.market-fetch input { flex: 1; width: auto; }.market-fetch button { flex: 0 0 auto; }.user-box { width: 100%; justify-content: space-between; }.page-shell { padding: 0 16px 28px; }.stat-grid { gap: 9px; }.stat-card { min-height: 95px; padding: 13px; }.stat-card strong { font-size: 17px; }.panel { padding: 13px; }.chart-title { align-items: flex-start; flex-direction: column; gap: 8px; }.chart-tools { justify-content: flex-start; }.chart-zoom-controls { width: 100%; justify-content: flex-start; }.chart-wrap { height: 520px; }.result-reveal, .collected-heading { align-items: stretch; flex-direction: column; }.result-reveal button { width: 100%; }.result-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }.side-column { grid-template-columns: 1fr; }.legend-note { margin-left: 0; width: 100%; }.notice { align-items: flex-start; line-height: 1.5; flex-wrap: wrap; }.notice #marketDataHint { width: 100%; }.library-toolbar > * { width: 100%; }.library-toolbar .compact-field { justify-content: space-between; }.library-toolbar select { flex: 1; }.selected-pattern { flex-direction: column; }.library-grid, .collected-grid { grid-template-columns: 1fr; } }

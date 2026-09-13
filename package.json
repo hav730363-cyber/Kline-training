@@ -1,0 +1,40 @@
+{
+  "name": "kline-training-desktop",
+  "version": "1.0.0",
+  "description": "K线形态训练 Windows 便携版",
+  "author": "K线训练项目",
+  "main": "electron/main.js",
+  "private": true,
+  "scripts": {
+    "dist:portable": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "^38.1.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.kline.training",
+    "productName": "K线训练",
+    "directories": { "output": "dist-electron-v12" },
+    "files": [
+      "electron/**/*",
+      "index.html",
+      "styles.css",
+      "library.js",
+      "sample_bank.json",
+      "app.js",
+      "manifest.webmanifest",
+      "icon.svg",
+      "sw.js"
+    ],
+    "extraResources": [
+      { "from": "dist-sidecar/K线训练服务.exe", "to": "K线训练服务.exe" }
+    ],
+    "win": {
+      "target": [{ "target": "portable", "arch": ["x64"] }]
+    },
+    "portable": {
+      "artifactName": "K线训练-Windows-便携版.${ext}"
+    }
+  }
+}

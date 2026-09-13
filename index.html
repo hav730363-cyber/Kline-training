@@ -25,7 +25,13 @@
             <option value="monthly">月线</option>
             <option value="yearly">年线</option>
           </select>
-          <button class="ghost-button" id="fetchMarketButton" type="button">获取东方财富行情</button>
+          <select id="dataProviderSelect" aria-label="真实数据源">
+            <option value="baostock">BaoStock（主数据源）</option>
+            <option value="eastmoney">东方财富（备用）</option>
+          </select>
+          <button class="ghost-button" id="fetchMarketButton" type="button">获取真实行情</button>
+          <button class="primary-button" id="collectSamplesButton" type="button" title="使用 BaoStock 自动获取并筛选 A 股和场内 ETF">样本采集</button>
+          <button class="secondary-button" id="stopCollectionButton" type="button" hidden>停止采集</button>
         </div>
         <label class="compact-field">
           <span>训练模式</span>
@@ -291,7 +297,11 @@
           <div class="collected-heading">
             <div>
               <h3>候选样本库</h3>
-              <p id="candidateScanHint">获取真实行情后，可扫描符合底部逻辑的历史片段。</p>
+              <p id="candidateScanHint">点击顶部“样本采集”，系统会自动获取并筛选 A 股和场内 ETF；网络不稳定时可用 CSV 导入。</p>
+              <div class="collection-progress" id="collectionProgress" hidden>
+                <div class="collection-progress-meta"><span id="collectionProgressLabel">等待采集</span><strong id="collectionProgressPercent">0%</strong></div>
+                <progress id="collectionProgressBar" max="100" value="0" aria-label="样本采集进度">0%</progress>
+              </div>
             </div>
             <span class="library-count" id="candidateSampleCount">0 个候选</span>
           </div>
@@ -320,6 +330,31 @@
         <label class="search-field"><span>用户名</span><input id="userNameInput" type="text" maxlength="20" placeholder="例如：小明" /></label>
         <p class="trade-hint" id="loginHint">当前为自用测试阶段，不需要手机号和密码。</p>
         <div class="login-actions"><button class="secondary-button" id="cancelLoginButton" type="button">取消</button><button class="primary-button" id="saveLoginButton" type="button">保存用户名</button></div>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="collectionProgressModal" hidden>
+      <section class="collection-progress-card" role="dialog" aria-modal="false" aria-labelledby="collectionProgressTitle">
+        <div class="panel-heading">
+          <div><h2 id="collectionProgressTitle">样本采集中</h2><p>正在使用 BaoStock 自动筛选真实 A 股和场内 ETF 数据</p></div>
+          <button class="icon-button" id="closeCollectionProgressButton" type="button" aria-label="关闭采集进度">×</button>
+        </div>
+        <p class="trade-hint" id="collectionModalStatus">正在准备采集任务…</p>
+        <div class="collection-modal-progress">
+          <div class="collection-progress-meta"><span id="collectionModalProgressLabel">等待证券清单</span><strong id="collectionModalProgressPercent">0%</strong></div>
+          <progress id="collectionModalProgressBar" max="100" value="0" aria-label="样本采集进度">0%</progress>
+        </div>
+        <div class="collection-progress-stat-grid">
+          <div><span>已扫描 / 总数</span><strong id="collectionModalScanned">0 / 0</strong></div>
+          <div><span>成功</span><strong id="collectionModalSuccess">0</strong></div>
+          <div><span>失败</span><strong id="collectionModalFailed">0</strong></div>
+          <div><span>合格候选</span><strong id="collectionModalCandidates">0</strong></div>
+        </div>
+        <p class="collection-modal-current" id="collectionModalCurrent">等待开始请求…</p>
+        <div class="login-actions">
+          <button class="secondary-button" id="collectionModalStopButton" type="button">停止采集</button>
+          <button class="primary-button" id="collectionModalCloseButton" type="button" hidden>关闭</button>
+        </div>
       </section>
     </div>
 

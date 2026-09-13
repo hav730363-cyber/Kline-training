@@ -12,6 +12,15 @@ const initialVisibleBars = 1;
 const defaultChartBars = 65;
 const minChartBars = 20;
 const maxChartBars = 240;
+const sampleContextBars = 40;
+const sampleTrainingBars = 180;
+const automaticScanLimit = 120;
+const collectionRequestTimeoutMs = 15000;
+const collectionUniverseTimeoutMs = 90000;
+const supportedAutomaticPatternIds = [
+  "triple-bottom", "head-shoulders-bottom", "adam-adam-bottom",
+  "adam-eve-bottom", "rectangle-bottom", "round-bottom",
+];
 
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -43,7 +52,28 @@ const state = {
   tradingRule: "a-share",
   chartBars: defaultChartBars,
   chartOffset: 0,
+  collection: { running: false, stopRequested: false, scanned: 0, total: 0, success: 0, failed: 0 },
 };
+
+function hasCompleteSampleWindow(sample) {
+  if (!sample || sample.snapshot !== true || !Array.isArray(sample.bars)) return false;
+  const trainingStart = Number(sample.trainingStartIndex ?? sample.startIndex);
+  const trainingEnd = Number(sample.trainingEndIndex ?? sample.endIndex);
+  return sample.bars.length === sampleContextBars + sampleTrainingBars
+    && trainingStart === sampleContextBars
+    && trainingEnd === sampleContextBars + sampleTrainingBars - 1
+    && Number.isInteger(trainingStart) && Number.isInteger(trainingEnd);
+}
+
+function hasCompleteCandidateWindow(sample) {
+  if (sample?.snapshot === true) return hasCompleteSampleWindow(sample);
+  const start = Number(sample?.trainingStartIndex ?? sample?.startIndex);
+  const end = Number(sample?.trainingEndIndex ?? sample?.endIndex);
+  const contextStart = Number(sample?.contextStartIndex);
+  return Number.isInteger(start) && Number.isInteger(end) && Number.isInteger(contextStart)
+    && start - contextStart === sampleContextBars
+    && end - start + 1 === sampleTrainingBars;
+}
 
 function patternLibrary() {
   return Array.isArray(window.KLINE_PATTERN_LIBRARY) ? window.KLINE_PATTERN_LIBRARY : [];
@@ -81,7 +111,7 @@ function saveCollectedSamples() {
 function loadCandidateSamples() {
   try {
     const saved = JSON.parse(localStorage.getItem("kline-candidate-samples"));
-    return Array.isArray(saved) ? saved.map((sample) => ({
+    return Array.isArray(saved) ? saved.filter(hasCompleteCandidateWindow).map((sample) => ({
       ...sample,
       reviewStatus: sample.reviewStatus || "pending",
       status: sample.status || "待审核",
@@ -101,13 +131,21 @@ async function loadRealSampleBank() {
     if (!response.ok) return;
     const payload = await response.json();
     if (payload?.format !== "kline-training-real-sample-bank" || !Array.isArray(payload.samples)) return;
-    const merged = [...state.candidateSamples, ...payload.samples.map((sample) => ({
+    const validSamples = payload.samples.filter(hasCompleteSampleWindow);
+    const merged = [...state.candidateSamples, ...validSamples.map((sample) => ({
       ...sample, reviewStatus: sample.reviewStatus || "pending", status: sample.status || "待审核", snapshot: true,
     }))];
     state.candidateSamples = [...new Map(merged.map((sample) => [sample.key, sample])).values()]
       .sort((a, b) => (Number(b.confidence) || 0) - (Number(a.confidence) || 0)).slice(0, 400);
     saveCandidateSamples();
-    $("candidateScanHint").textContent = `已载入东方财富真实候选样本库：${payload.sampleCount || payload.samples.length} 个片段，均需人工审核后进入训练库。`;
+    const isRequestedBank = Number(payload.version) >= 3
+      && Number(payload.targetPerPattern) === 2
+      && Number(payload.contextBars) === 40
+      && Number(payload.trainingBars) === 180;
+    const rejectedCount = payload.samples.length - validSamples.length;
+    $("candidateScanHint").textContent = validSamples.length
+      ? `已载入 ${validSamples.length} 个完整候选样本（背景 40 根 + 训练 180 根），均需人工审核${rejectedCount ? `；已忽略 ${rejectedCount} 个旧格式片段` : ""}。`
+      : `内置样本库没有符合“40 根背景 + 180 根训练区”的完整片段；旧格式样本已全部忽略。`;
     renderLibrary();
   } catch (_) { /* 静态部署尚未上传样本文件时不影响基础训练 */ }
 }
@@ -430,24 +468,46 @@ function resetTradingSession() {
   state.chartOffset = 0;
 }
 
-async function fetchMarketData() {
+function providerLabel(provider) {
+  return provider === "baostock" ? "BaoStock" : "东方财富";
+}
+
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = collectionRequestTimeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    const payload = await response.json();
+    return { response, payload };
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error(`请求超过 ${Math.round(timeoutMs / 1000)} 秒未返回，已跳过`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchMarketData({ collect = false } = {}) {
   const input = $("marketSymbol");
-  const button = $("fetchMarketButton");
+  const button = $(collect ? "collectSamplesButton" : "fetchMarketButton");
   const rawSymbol = input.value.trim();
   const period = $("periodSelect").value || "daily";
+  const provider = $("dataProviderSelect")?.value || "baostock";
   if (!rawSymbol) return setMarketHint("请输入 6 位 A 股或场内 ETF 代码，例如 600000。", true);
   button.disabled = true;
-  button.textContent = "获取中…";
-  setMarketHint(`正在获取东方财富${period === "daily" ? "日" : period === "weekly" ? "周" : period === "monthly" ? "月" : "年"}线前复权数据，请稍候…`);
+  button.textContent = collect ? "采集中…" : "获取中…";
+  const periodName = period === "daily" ? "日" : period === "weekly" ? "周" : period === "monthly" ? "月" : "年";
+  setMarketHint(`正在通过${providerLabel(provider)}获取${periodName}线前复权真实数据，请稍候…`);
   try {
-    const response = await fetch(`/api/market/daily?symbol=${encodeURIComponent(rawSymbol)}&limit=1000&adjust=qfq&period=${encodeURIComponent(period)}`);
+    const limit = collect ? 2000 : 1000;
+    const response = await fetch(`/api/market/daily?symbol=${encodeURIComponent(rawSymbol)}&limit=${limit}&adjust=qfq&period=${encodeURIComponent(period)}&provider=${encodeURIComponent(provider)}`);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "服务端返回错误。");
     const parsedBars = payload.bars.map((row) => ({
       date: new Date(`${row.date}T00:00:00`),
       open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close), volume: Number(row.volume),
     }));
-    const quality = validateBars(parsedBars);
+    const quality = validateBars(parsedBars, period === "yearly" ? 10 : 70);
     const bars = quality.bars;
     state.bars = bars;
     state.symbol = payload.symbol;
@@ -459,15 +519,16 @@ async function fetchMarketData() {
     resetTradingSession();
     $("periodSelect").value = period;
     $("timeframeTag").textContent = { daily: "日线", weekly: "周线", monthly: "月线", yearly: "年线" }[period];
-    $("dataStatus").textContent = `已获取 ${state.symbol}：${bars.length} 根真实前复权${period === "daily" ? "日" : period === "weekly" ? "周" : period === "monthly" ? "月" : "年"}线；`;
+    $("dataStatus").textContent = `已获取 ${state.symbol}：${bars.length} 根${providerLabel(provider)}真实前复权${periodName}线；`;
     setMarketHint(`${dataMetaLabel()}。${quality.droppedCount ? ` 已剔除 ${quality.droppedCount} 行异常/重复数据。` : " 数据质量检查通过。"}`);
-    setHint("真实行情获取成功，已重新开始一局训练。", false);
+    setHint(collect ? "样本采集完成，正在扫描当前代码的候选形态片段。" : "真实行情获取成功，已重新开始一局训练。", false);
     render();
+    if (collect) scanCandidateSamples();
   } catch (error) {
     setMarketHint(`获取失败：${error.message}`, true);
   } finally {
     button.disabled = false;
-    button.textContent = "获取东方财富行情";
+    button.textContent = collect ? "样本采集（联网）" : "获取真实行情";
   }
 }
 
@@ -805,44 +866,219 @@ function classifyCandidate(segment) {
   ].sort((a, b) => b[1] - a[1])[0];
 }
 
+function detectCandidateSamples(bars, symbol, meta = {}) {
+  const candidates = [];
+  const patternMap = new Map(patternLibrary().map((pattern) => [pattern.id, pattern]));
+  const firstEnd = sampleContextBars + sampleTrainingBars - 1;
+  for (let end = firstEnd; end < bars.length; end += 5) {
+    const start = end - sampleTrainingBars + 1;
+    const context = bars.slice(start - sampleContextBars, start);
+    const segment = bars.slice(start, end + 1);
+    if (context.length !== sampleContextBars || segment.length !== sampleTrainingBars) continue;
+    const bottom = bottomLogicScore(segment);
+    const [patternId, patternScore] = classifyCandidate(segment);
+    const confidence = clamp(bottom.score * .56 + patternScore * .44);
+    if (bottom.score < .58 || patternScore < .55) continue;
+    const pattern = patternMap.get(patternId);
+    if (!pattern) continue;
+    const startDate = formatDate(segment[0].date);
+    const endDate = formatDate(segment.at(-1).date);
+    const key = `${symbol}|${startDate}|${endDate}|${patternId}`;
+    if (candidates.some((item) => item.key === key)) continue;
+    const snapshotBars = [...context, ...segment].map((bar) => ({
+      date: formatDate(bar.date), open: bar.open, high: bar.high, low: bar.low, close: bar.close, volume: bar.volume,
+    }));
+    candidates.push({
+      key, symbol, patternId, patternName: pattern.name,
+      startDate, endDate, contextStartDate: formatDate(context[0].date),
+      startIndex: sampleContextBars, endIndex: sampleContextBars + sampleTrainingBars - 1,
+      contextStartIndex: 0, trainingStartIndex: sampleContextBars, trainingEndIndex: sampleContextBars + sampleTrainingBars - 1,
+      confidence: round(confidence, 3), bottomScore: round(bottom.score, 3), patternScore: round(patternScore, 3),
+      dataSource: "real", provider: meta.provider || "BaoStock", adjust: meta.adjust || "qfq", period: meta.period || "daily",
+      reviewStatus: "pending", status: "待审核", autoEligible: confidence >= .9,
+      snapshot: true, bars: snapshotBars,
+    });
+  }
+  return candidates;
+}
+
+function mergeCandidateSamples(candidates) {
+  const unique = [...new Map([...state.candidateSamples, ...candidates].map((sample) => [sample.key, sample])).values()];
+  const grouped = new Map();
+  unique.forEach((sample) => {
+    if (!hasCompleteCandidateWindow(sample)) return;
+    if (!grouped.has(sample.patternId)) grouped.set(sample.patternId, []);
+    grouped.get(sample.patternId).push(sample);
+  });
+  state.candidateSamples = [...grouped.values()]
+    // 每轮每种形态只保留一个最高置信度候选，避免同一轮重复塞入样本库。
+    .flatMap((items) => items.sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0)).slice(0, 1))
+    .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0));
+  saveCandidateSamples();
+}
+
 function scanCandidateSamples() {
   if (state.dataSource === "demo") {
     $("candidateScanHint").textContent = "候选扫描仅对真实行情或本地导入行情开放。";
     return;
   }
-  const candidates = [];
-  for (const size of [60, 90, 120]) {
-    for (let end = Math.max(size - 1, state.trainingStartIndex); end < state.bars.length; end += 5) {
-      const start = end - size + 1;
-      const segment = state.bars.slice(start, end + 1);
-      if (segment.length < size) continue;
-      const bottom = bottomLogicScore(segment);
-      const [patternId, patternScore] = classifyCandidate(segment);
-      const confidence = clamp(bottom.score * .56 + patternScore * .44);
-      if (bottom.score < .58 || patternScore < .55) continue;
-      const pattern = patternLibrary().find((item) => item.id === patternId);
-      if (!pattern) continue;
-      const key = `${state.symbol}|${formatDate(segment[0].date)}|${formatDate(segment.at(-1).date)}|${patternId}`;
-      if (candidates.some((item) => item.key === key)) continue;
-      candidates.push({
-        key, symbol: state.symbol, patternId, patternName: pattern.name,
-        startDate: formatDate(segment[0].date), endDate: formatDate(segment.at(-1).date),
-        startIndex: start, endIndex: end, confidence: round(confidence, 3),
-        bottomScore: round(bottom.score, 3), patternScore: round(patternScore, 3),
-        reviewStatus: "pending",
-        status: RULE_ENGINE_VALIDATED && confidence >= .9 ? "自动入库" : "待审核",
-        autoEligible: confidence >= .9,
-      });
-    }
-  }
-  const merged = [...state.candidateSamples, ...candidates];
-  const unique = [...new Map(merged.map((sample) => [sample.key, sample])).values()];
-  state.candidateSamples = unique.sort((a, b) => b.confidence - a.confidence).slice(0, 200);
-  saveCandidateSamples();
+  const candidates = detectCandidateSamples(state.bars, state.symbol, state.dataMeta);
+  mergeCandidateSamples(candidates);
   $("candidateScanHint").textContent = state.candidateSamples.length
-    ? `扫描完成：本次新增 ${candidates.length} 个，累计 ${state.candidateSamples.length} 个候选，当前均需审核${RULE_ENGINE_VALIDATED ? "或按阈值自动入库" : "（规则尚未完成回测）"}。`
-    : "未找到同时满足底部逻辑和形态初筛条件的片段，可换一只股票或 ETF。";
+    ? `扫描完成：发现 ${candidates.length} 个候选，当前保留 ${state.candidateSamples.length} 个完整片段；每条均为背景 40 根 + 训练 180 根，需人工审核。`
+    : "未找到符合底部逻辑和形态初筛条件的完整片段。";
   renderLibrary();
+}
+
+function selectAutomaticUniverse(instruments) {
+  const stocks = instruments.filter((item) => item.kind === "stock");
+  const etfs = instruments.filter((item) => item.kind === "etf");
+  const etfQuota = Math.min(30, etfs.length);
+  const stockQuota = Math.max(0, automaticScanLimit - etfQuota);
+  const pickEvenly = (items, quota) => {
+    if (items.length <= quota) return items;
+    const step = items.length / quota;
+    return Array.from({ length: quota }, (_, index) => items[Math.min(items.length - 1, Math.floor(index * step))]);
+  };
+  return [...pickEvenly(stocks, stockQuota), ...pickEvenly(etfs, etfQuota)];
+}
+
+function updateCollectionModal(message, error = false) {
+  const modal = $("collectionProgressModal");
+  const progressBar = $("collectionModalProgressBar");
+  const progressLabel = $("collectionModalProgressLabel");
+  const progressPercent = $("collectionModalProgressPercent");
+  const scanned = $("collectionModalScanned");
+  const success = $("collectionModalSuccess");
+  const failed = $("collectionModalFailed");
+  const candidates = $("collectionModalCandidates");
+  const current = $("collectionModalCurrent");
+  const status = $("collectionModalStatus");
+  const stopButton = $("collectionModalStopButton");
+  const closeButton = $("collectionModalCloseButton");
+  if (!modal || !progressBar || !progressLabel || !progressPercent || !scanned || !success || !failed || !candidates || !current || !status || !stopButton || !closeButton) return;
+  if (state.collection.running || state.collection.total || error) modal.hidden = false;
+  const total = Number(state.collection.total) || 0;
+  const done = Math.min(Number(state.collection.scanned) || 0, total || 0);
+  const percent = total ? Math.round((done / total) * 100) : 0;
+  progressBar.value = percent;
+  progressLabel.textContent = total ? `${done}/${total} 个标的` : "正在获取证券清单";
+  progressPercent.textContent = `${percent}%`;
+  scanned.textContent = `${done} / ${total}`;
+  success.textContent = String(state.collection.success || 0);
+  failed.textContent = String(state.collection.failed || 0);
+  candidates.textContent = String(state.candidateSamples.length || 0);
+  current.textContent = message;
+  status.textContent = error ? "采集出现问题" : state.collection.running ? "正在自动筛选符合规则的真实行情…" : "采集任务已结束";
+  status.style.color = error ? "#ff9aa6" : "";
+  stopButton.hidden = !state.collection.running;
+  stopButton.disabled = !state.collection.running || state.collection.stopRequested;
+  closeButton.hidden = state.collection.running;
+}
+
+function requestCollectionStop() {
+  if (!state.collection.running) return;
+  state.collection.stopRequested = true;
+  $("stopCollectionButton").disabled = true;
+  $("collectionModalStopButton").disabled = true;
+  updateCollectionUi("正在停止采集，请等待当前请求结束");
+}
+
+function updateCollectionUi(message, error = false) {
+  const progress = state.collection.total ? `（${state.collection.scanned}/${state.collection.total}，成功 ${state.collection.success}，失败 ${state.collection.failed}）` : "";
+  $("candidateScanHint").textContent = `${message}${progress}`;
+  $("candidateScanHint").style.color = error ? "#ff9aa6" : "";
+  const progressWrap = $("collectionProgress");
+  const progressBar = $("collectionProgressBar");
+  const progressLabel = $("collectionProgressLabel");
+  const progressPercent = $("collectionProgressPercent");
+  if (!progressWrap || !progressBar || !progressLabel || !progressPercent) return;
+  const total = Number(state.collection.total) || 0;
+  const scanned = Math.min(Number(state.collection.scanned) || 0, total || 0);
+  const percent = total ? Math.round((scanned / total) * 100) : 0;
+  progressWrap.hidden = !state.collection.running && !total;
+  progressBar.value = percent;
+  progressLabel.textContent = total ? `${scanned}/${total} 个标的 · 成功 ${state.collection.success} · 失败 ${state.collection.failed}` : message;
+  progressPercent.textContent = `${percent}%`;
+  updateCollectionModal(message, error);
+}
+
+async function startAutomaticCollection() {
+  if (state.collection.running) return;
+  state.collection = { running: true, stopRequested: false, scanned: 0, total: 0, success: 0, failed: 0 };
+  const button = $("collectSamplesButton");
+  button.disabled = true;
+  button.textContent = "采集中…";
+  $("stopCollectionButton").disabled = false;
+  $("stopCollectionButton").hidden = false;
+  $("collectionProgressModal").hidden = false;
+  $("closeCollectionProgressButton").hidden = true;
+  $("collectionModalCloseButton").hidden = true;
+  $("collectionModalStopButton").hidden = false;
+  updateCollectionModal("正在获取证券清单（BaoStock 清单可能需要几十秒）…");
+  try {
+    const { response: universeResponse, payload: universe } = await fetchJsonWithTimeout(
+      "/api/market/universe?provider=baostock",
+      { cache: "no-store" },
+      collectionUniverseTimeoutMs,
+    );
+    if (!universeResponse.ok) throw new Error(universe.error || "证券列表获取失败。");
+    const instruments = selectAutomaticUniverse(universe.instruments || []);
+    if (!instruments.length) throw new Error("没有获得可扫描的 A 股或场内 ETF 清单。");
+    state.collection.total = instruments.length;
+    updateCollectionUi(`已自动筛选 ${universe.count} 个证券，首轮扫描 ${instruments.length} 个代表性股票/ETF`);
+    const collected = [];
+    let lastFailure = "";
+    for (const instrument of instruments) {
+      if (state.collection.stopRequested) break;
+      try {
+        const { response, payload } = await fetchJsonWithTimeout(
+          `/api/market/daily?symbol=${encodeURIComponent(instrument.symbol)}&limit=2000&adjust=qfq&period=daily&provider=baostock`,
+          { cache: "no-store" },
+        );
+        if (!response.ok) throw new Error(payload.error || "行情获取失败");
+        const bars = payload.bars.map((row) => ({ date: new Date(`${row.date}T00:00:00`), open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close), volume: Number(row.volume) }));
+        const quality = validateBars(bars);
+        const found = detectCandidateSamples(quality.bars, payload.symbol || instrument.symbol, payload);
+        collected.push(...found);
+        // 每个成功标的立即合并并刷新页面，避免等整轮结束才看见样本。
+        if (found.length) {
+          mergeCandidateSamples(found);
+          renderLibrary();
+        }
+        state.collection.success += 1;
+        lastFailure = "";
+      } catch (error) {
+        state.collection.failed += 1;
+        lastFailure = `${instrument.symbol}：${error.message}`;
+      } finally {
+        state.collection.scanned += 1;
+        updateCollectionUi(`正在自动筛选 ${instrument.symbol} · ${instrument.name || ""}`);
+      }
+      const foundPatternIds = new Set(state.candidateSamples.map((sample) => sample.patternId));
+      if (supportedAutomaticPatternIds.every((patternId) => foundPatternIds.has(patternId))) break;
+    }
+    mergeCandidateSamples(collected);
+    const foundPatternIds = new Set(state.candidateSamples.map((sample) => sample.patternId));
+    const coveredCount = supportedAutomaticPatternIds.filter((patternId) => foundPatternIds.has(patternId)).length;
+    const suffix = lastFailure ? `；最近一次失败：${lastFailure}` : "";
+    const status = state.collection.stopRequested
+      ? `采集已停止，当前保留 ${state.candidateSamples.length} 个完整候选`
+      : `自动采集完成，当前保留 ${state.candidateSamples.length} 个完整候选，已覆盖 ${coveredCount}/${supportedAutomaticPatternIds.length} 种当前支持形态`;
+    updateCollectionUi(`${status}${suffix}`);
+    setHint(`样本采集完成：${state.candidateSamples.length} 个完整候选待审核；每条均为背景40根+训练180根。`, false);
+    renderLibrary();
+  } catch (error) {
+    updateCollectionUi(`自动采集失败：${error.message}`, true);
+    setHint(`样本采集失败：${error.message}`, true);
+  } finally {
+    state.collection.running = false;
+    button.disabled = false;
+    button.textContent = "样本采集";
+    $("stopCollectionButton").hidden = true;
+    $("closeCollectionProgressButton").hidden = false;
+    updateCollectionModal($("candidateScanHint").textContent);
+  }
 }
 
 function visibleLibraryPatterns() {
@@ -900,10 +1136,11 @@ function randomTrainingSample() {
   const storedCollected = state.collectedSamples.map((sample) => ({ ...sample, status: sample.status || "已审核" }));
   const approved = [...state.candidateSamples, ...storedCollected].filter((sample) => sample.reviewStatus === "approved"
     && sample.dataSource !== "demo" && sample.provider !== "内置演示"
+    && hasCompleteCandidateWindow(sample)
     && (sample.snapshot || sample.symbol === state.symbol) && Number.isInteger(sample.startIndex) && Number.isInteger(sample.endIndex)
     && sample.startIndex >= 0 && sample.endIndex < state.bars.length);
   if (!approved.length) {
-    setHint("当前没有已审核真实样本。请先获取东方财富行情，扫描候选片段并审核通过。", true);
+    setHint("当前没有已审核真实样本。请先获取真实行情或导入 CSV，扫描候选片段并审核通过。", true);
     $("candidateScanHint").textContent = "随机训练只从已审核真实样本抽取，不会使用合成行情。";
     return;
   }
@@ -954,7 +1191,7 @@ function renderCandidateSamples() {
     const reviewActions = sample.reviewStatus === "pending"
       ? `<button class="primary-button candidate-action" type="button" data-candidate-action="approve" data-candidate-key="${escapeHtml(sample.key)}">审核通过并入训练库</button><button class="secondary-button candidate-action" type="button" data-candidate-action="reject" data-candidate-key="${escapeHtml(sample.key)}">驳回</button>`
       : `<span class="candidate-review-note">${escapeHtml(sample.reviewedBy || "本机审核")} · ${escapeHtml(sample.reviewedAt || "已处理")}</span>`;
-    return `<article class="collected-card candidate-card"><strong>${escapeHtml(sample.patternName)}</strong><span>${escapeHtml(sample.symbol)} · ${escapeHtml(sample.startDate)} 至 ${escapeHtml(sample.endDate)}</span><span>${statusLabel} · ${quality}</span><div class="candidate-actions"><button class="secondary-button candidate-action" type="button" data-candidate-action="train" data-candidate-key="${escapeHtml(sample.key)}">训练此片段</button>${reviewActions}</div></article>`;
+    return `<article class="collected-card candidate-card"><strong>${escapeHtml(sample.patternName)}</strong><span>${escapeHtml(sample.symbol)} · ${escapeHtml(sample.startDate)} 至 ${escapeHtml(sample.endDate)}</span><span>背景 40 根 + 训练 180 根 · ${statusLabel} · ${quality}</span><div class="candidate-actions"><button class="secondary-button candidate-action" type="button" data-candidate-action="train" data-candidate-key="${escapeHtml(sample.key)}">训练此片段</button>${reviewActions}</div></article>`;
   }).join("");
 }
 
@@ -963,8 +1200,15 @@ function findCandidate(key) { return state.candidateSamples.find((sample) => sam
 function reviewCandidate(key, decision) {
   const candidate = findCandidate(key);
   if (!candidate) return;
+  if (decision === "rejected") {
+    state.candidateSamples = state.candidateSamples.filter((sample) => sample.key !== key);
+    saveCandidateSamples();
+    $("candidateScanHint").textContent = "已删除被驳回样本。";
+    renderLibrary();
+    return;
+  }
   candidate.reviewStatus = decision;
-  candidate.status = decision === "approved" ? "已审核 · 训练库" : "已驳回";
+  candidate.status = "已审核 · 训练库";
   candidate.reviewedBy = state.userName || "本机审核";
   candidate.reviewedAt = new Date().toLocaleString("zh-CN");
   saveCandidateSamples();
@@ -977,8 +1221,8 @@ function trainCandidate(key) {
 
   const isSnapshot = candidate.snapshot === true;
   if (isSnapshot) {
-    const minimumSnapshotBars = 45;
-    if (!Array.isArray(candidate.bars) || candidate.bars.length < minimumSnapshotBars) {
+    const minimumSnapshotBars = sampleContextBars + sampleTrainingBars;
+    if (!hasCompleteSampleWindow(candidate)) {
       return setHint("这个样本缺少完整 K 线数据，不能开始训练。请重新载入样本库。", true);
     }
     try {
@@ -986,8 +1230,7 @@ function trainCandidate(key) {
         ...bar,
         date: bar.date instanceof Date ? bar.date : new Date(`${String(bar.date).slice(0, 10)}T00:00:00`),
       }));
-      // 样本片段本身已经是经过筛选的训练窗口，最低长度按观察窗口校验；
-      // 直接导入整段行情仍然使用 validateBars 的 70 根默认门槛。
+      // 样本必须严格包含40根背景和180根训练K线，禁止旧格式片段混入。
       const quality = validateBars(normalized, minimumSnapshotBars);
       state.bars = quality.bars;
       state.symbol = candidate.symbol;
@@ -1000,16 +1243,18 @@ function trainCandidate(key) {
     const snapshotStart = Number(candidate.trainingStartIndex ?? candidate.startIndex);
     const snapshotEnd = Number(candidate.trainingEndIndex ?? candidate.endIndex);
     if (!Number.isInteger(snapshotStart) || !Number.isInteger(snapshotEnd)
-      || snapshotStart < 0 || snapshotEnd < snapshotStart || snapshotEnd >= state.bars.length
-      || snapshotEnd - snapshotStart + 1 < minimumSnapshotBars) {
+      || snapshotStart !== sampleContextBars
+      || snapshotEnd !== sampleContextBars + sampleTrainingBars - 1
+      || snapshotEnd >= state.bars.length) {
       return setHint("这个样本的训练区间不完整，不能开始训练。请重新载入样本库。", true);
     }
     state.trainingStartIndex = snapshotStart;
     state.trainingEndIndex = snapshotEnd;
   } else {
+    if (!hasCompleteCandidateWindow(candidate)) return setHint("这个样本没有完整的40根前置背景和180根训练区，已拒绝训练。", true);
     if (candidate.symbol !== state.symbol) return setHint("该样本属于其他标的，请先获取对应代码的真实行情后再训练。", true);
-    const startIndex = Number(candidate.startIndex);
-    const endIndex = Number(candidate.endIndex);
+    const startIndex = Number(candidate.trainingStartIndex ?? candidate.startIndex);
+    const endIndex = Number(candidate.trainingEndIndex ?? candidate.endIndex);
     if (!Number.isInteger(startIndex) || !Number.isInteger(endIndex) || startIndex < 0 || endIndex < startIndex || endIndex >= state.bars.length) {
       return setHint("当前行情中没有完整的该样本片段，请重新扫描。", true);
     }
@@ -1023,7 +1268,7 @@ function trainCandidate(key) {
   $("identityToggle").checked = false;
   resetTradingSession();
   $("dataStatus").textContent = `训练片段：${candidate.patternName} · ${candidate.startDate} 至 ${candidate.endDate}；`;
-  setMarketHint(`已载入东方财富真实样本：${candidate.symbol} · 前复权 · 训练中名称和日期仍会隐藏。`, false);
+  setMarketHint(`已载入${candidate.provider || "真实行情"}样本：${candidate.symbol} · 前复权 · 背景40根 + 训练180根。`, false);
   setHint(`已载入「${candidate.patternName}」候选片段，可开始独立训练。`, false);
   render();
   $("chartCanvas").scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1050,11 +1295,17 @@ function sampleReviewDecision() {
 
 function collectCurrentSample() {
   if (!state.finished) return;
+  if (state.trainingStartIndex < sampleContextBars || trainingLength() !== sampleTrainingBars) {
+    return setHint("当前训练片段不是完整的40根背景 + 180根训练区，不能收藏到训练库。", true);
+  }
   const pattern = revealedPattern();
   if (!pattern) return setHint("请先在形态库选择一个知识模板，为导入行情标注形态后再收藏。", true);
   const key = sampleKey(pattern);
   if (state.collectedSamples.some((sample) => sample.key === key)) return;
   const review = sampleReviewDecision();
+  const snapshotBars = state.bars.slice(state.trainingStartIndex - sampleContextBars, state.trainingEndIndex + 1).map((bar) => ({
+    date: formatDate(bar.date), open: bar.open, high: bar.high, low: bar.low, close: bar.close, volume: bar.volume,
+  }));
   state.collectedSamples = [{
     key,
     symbol: state.symbol,
@@ -1063,8 +1314,13 @@ function collectCurrentSample() {
     patternId: pattern.id,
     patternName: pattern.name,
     dataSource: state.dataSource,
-    startIndex: state.trainingStartIndex,
-    endIndex: state.trainingEndIndex,
+    startIndex: sampleContextBars,
+    endIndex: sampleContextBars + sampleTrainingBars - 1,
+    contextStartIndex: 0,
+    trainingStartIndex: sampleContextBars,
+    trainingEndIndex: sampleContextBars + sampleTrainingBars - 1,
+    snapshot: true,
+    bars: snapshotBars,
     provider: state.dataMeta?.provider || sourceLabel(),
     adjust: state.dataMeta?.adjust || "qfq",
     period: state.dataMeta?.period || "daily",
@@ -1527,6 +1783,11 @@ $("exportSessionButton").addEventListener("click", exportSession);
 $("importSessionButton").addEventListener("click", () => $("backupFileInput").click());
 $("backupFileInput").addEventListener("change", (event) => { const [file] = event.target.files; if (file) importSession(file); event.target.value = ""; });
 $("fetchMarketButton").addEventListener("click", fetchMarketData);
+$("collectSamplesButton").addEventListener("click", startAutomaticCollection);
+$("stopCollectionButton").addEventListener("click", requestCollectionStop);
+$("collectionModalStopButton").addEventListener("click", requestCollectionStop);
+$("closeCollectionProgressButton").addEventListener("click", () => { $("collectionProgressModal").hidden = true; });
+$("collectionModalCloseButton").addEventListener("click", () => { $("collectionProgressModal").hidden = true; });
 $("marketSymbol").addEventListener("keydown", (event) => { if (event.key === "Enter") fetchMarketData(); });
 $("loginButton").addEventListener("click", openLogin);
 $("closeLoginButton").addEventListener("click", closeLogin);
