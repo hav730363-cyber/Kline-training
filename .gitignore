@@ -8,6 +8,7 @@ dist/
 build-*/
 dist-*/
 node_modules/
+.qa-runtime/
 .electron-builder-cache/
 asar-inspect/
 electron-test.log

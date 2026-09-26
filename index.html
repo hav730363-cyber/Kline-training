@@ -82,7 +82,8 @@
       </section>
 
       <section class="workspace-grid">
-        <div class="chart-panel panel">
+        <div class="chart-column">
+          <div class="chart-panel panel">
           <div class="panel-heading chart-heading">
             <div class="chart-title">
               <div class="identity-row">
@@ -109,6 +110,7 @@
               <button class="icon-button" id="zoomInButton" type="button" title="放大，显示更少 K 线">＋</button>
               <span id="zoomLabel">65 根</span>
             </div>
+          </div>
           </div>
           <div class="chart-wrap">
             <canvas id="chartCanvas" aria-label="K线图"></canvas>
@@ -142,6 +144,23 @@
             <span><i class="legend-line ma60"></i>MA60</span>
             <span class="legend-note">红涨绿跌 · 筹码峰为量价估算 · 费用规则：佣金最低 5 元，按训练费率计算</span>
           </div>
+          </div>
+
+          <section class="panel replay-panel">
+          <div class="panel-heading">
+            <div>
+              <h2>推进训练</h2>
+              <p id="replayHint">先观察当前走势，再决定是否交易 · 空格键推进</p>
+            </div>
+            <span class="step-count" id="stepCount">41 / 180</span>
+          </div>
+          <div class="progress-track"><span id="progressBar"></span></div>
+          <div class="replay-actions">
+            <button class="secondary-button" id="previousButton">上一根</button>
+            <button class="primary-button" id="nextButton">下一根 K 线 <kbd>空格</kbd></button>
+            <button class="secondary-button" id="finishButton">结束训练</button>
+          </div>
+          </section>
         </div>
 
         <aside class="side-column">
@@ -218,45 +237,20 @@
               <div><span>70%筹码区间</span><strong id="chipRangeValue">—</strong></div>
             </div>
           </section>
+
+          <section class="panel log-panel">
+            <div class="panel-heading">
+              <div>
+                <h2>交易记录</h2>
+                <p>每笔成交都会保留在本局复盘中</p>
+              </div>
+              <span class="trade-count" id="tradeCount">0 笔</span>
+            </div>
+            <ol class="trade-log-list" id="tradeLogBody" aria-label="本局交易记录">
+              <li class="trade-log-empty">本局还没有交易记录</li>
+            </ol>
+          </section>
         </aside>
-      </section>
-
-      <section class="bottom-grid">
-        <section class="panel replay-panel">
-          <div class="panel-heading">
-            <div>
-              <h2>推进训练</h2>
-              <p id="replayHint">先观察当前走势，再决定是否交易 · 空格键推进</p>
-            </div>
-            <span class="step-count" id="stepCount">41 / 180</span>
-          </div>
-          <div class="progress-track"><span id="progressBar"></span></div>
-          <div class="replay-actions">
-            <button class="secondary-button" id="previousButton">上一根</button>
-            <button class="primary-button" id="nextButton">下一根 K 线 <kbd>空格</kbd></button>
-            <button class="secondary-button" id="finishButton">结束训练</button>
-          </div>
-        </section>
-
-        <section class="panel log-panel">
-          <div class="panel-heading">
-            <div>
-              <h2>交易记录</h2>
-              <p>每笔成交都会保留在本局复盘中</p>
-            </div>
-            <span class="trade-count" id="tradeCount">0 笔</span>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr><th>时间</th><th>方向</th><th>价格</th><th>数量</th><th>费用</th><th>成交后现金</th></tr>
-              </thead>
-              <tbody id="tradeLogBody">
-                <tr class="empty-row"><td colspan="6">本局还没有交易记录</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
       </section>
 
       <section class="panel library-panel">

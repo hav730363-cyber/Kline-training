@@ -1744,7 +1744,21 @@ function render() {
   $("finishOverlay").hidden = true;
   renderResultReveal();
   renderResultStats();
-  $("tradeLogBody").innerHTML = state.trades.length ? state.trades.slice().reverse().map((item) => `<tr><td>${formatDate(state.bars[item.index].date)}</td><td class="${item.side === "buy" ? "buy-text" : "sell-text"}">${item.side === "buy" ? "买入" : "卖出"}</td><td>${formatPrice(item.price)}</td><td>${item.qty.toLocaleString()}</td><td>${formatMoney(item.fee)}</td><td>${formatMoney(item.cash)}</td></tr>`).join("") : '<tr class="empty-row"><td colspan="6">本局还没有交易记录</td></tr>';
+  $("tradeLogBody").innerHTML = state.trades.length ? state.trades.slice().reverse().map((item) => `
+    <li class="trade-log-item">
+      <div class="trade-log-heading">
+        <time>${formatDate(state.bars[item.index].date)}</time>
+        <span class="trade-log-side ${item.side === "buy" ? "buy-text" : "sell-text"}">${item.side === "buy" ? "买入" : "卖出"}</span>
+      </div>
+      <div class="trade-log-values">
+        <div><span>成交价格</span><strong>${formatPrice(item.price)}</strong></div>
+        <div><span>成交股数</span><strong>${item.qty.toLocaleString()} 股</strong></div>
+      </div>
+      <div class="trade-log-meta">
+        <span>费用 <strong>${formatMoney(item.fee)}</strong></span>
+        <span>成交后现金 <strong>${formatMoney(item.cash)}</strong></span>
+      </div>
+    </li>`).join("") : '<li class="trade-log-empty">本局还没有交易记录</li>';
   drawChart();
   renderLibrary();
   saveDraftSession();
