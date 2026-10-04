@@ -16,3 +16,4 @@ electron-test.log
 /.qa-runtime/
 /.layout-baseline-worktree/
 /.packaged-smoke-*/
+/发布-便携版-v*/
