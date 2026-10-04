@@ -1,10 +1,12 @@
-const CACHE_NAME = "kline-training-shell-v1";
+const CACHE_NAME = "kline-training-shell-v19-chart-tools";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css",
-  "./library.js",
-  "./app.js",
+  "./styles.css?v=20261004-chart-tools-v1",
+  "./library.js?v=20260925-collect-1",
+  "./review_rules.js?v=20261004-review-coach-v1",
+  "./app.js?v=20261004-chart-tools-v1",
+  "./research_ui.js?v=20260927-research-v1",
   "./manifest.webmanifest",
   "./icon.svg"
 ];

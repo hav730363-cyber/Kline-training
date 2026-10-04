@@ -1,26 +1,33 @@
 {
   "name": "kline-training-desktop",
-  "version": "1.0.0",
+  "version": "1.9.7",
   "description": "K线形态训练 Windows 便携版",
   "author": "K线训练项目",
   "main": "electron/main.js",
   "private": true,
   "scripts": {
+    "qa:intraday": "node qa/intraday-price-volume.cjs",
+    "qa:layout": "node qa/layout-screenshots.cjs",
+    "qa:operation-review": "node qa/operation-review.cjs",
+    "qa:review-coach": "node qa/review-coach.cjs",
     "dist:portable": "electron-builder --win portable"
   },
   "devDependencies": {
     "electron": "^38.1.0",
-    "electron-builder": "^26.0.12"
+    "electron-builder": "^26.0.12",
+    "playwright-core": "^1.63.0"
   },
   "build": {
     "appId": "com.kline.training",
     "productName": "K线训练",
-    "directories": { "output": "dist-electron-v12" },
+    "directories": { "output": "dist-electron-v26" },
     "files": [
       "electron/**/*",
       "index.html",
       "styles.css",
       "library.js",
+      "review_rules.js",
+      "research_ui.js",
       "sample_bank.json",
       "app.js",
       "manifest.webmanifest",
@@ -28,7 +35,7 @@
       "sw.js"
     ],
     "extraResources": [
-      { "from": "dist-sidecar/K线训练服务.exe", "to": "K线训练服务.exe" }
+      { "from": "dist-sidecar-v26/K线训练服务.exe", "to": "K线训练服务.exe" }
     ],
     "win": {
       "target": [{ "target": "portable", "arch": ["x64"] }]

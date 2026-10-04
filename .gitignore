@@ -13,3 +13,6 @@ asar-inspect/
 electron-test.log
 *.log
 *.spec.bak
+/.qa-runtime/
+/.layout-baseline-worktree/
+/.packaged-smoke-*/

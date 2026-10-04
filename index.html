@@ -8,7 +8,7 @@
     <link rel="manifest" href="manifest.webmanifest" />
     <link rel="icon" href="icon.svg" type="image/svg+xml" />
     <title>K线形态训练 - 单人训练版</title>
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=20261004-chart-tools-v1" />
   </head>
   <body>
     <header class="topbar">
@@ -26,11 +26,16 @@
             <option value="yearly">年线</option>
           </select>
           <select id="dataProviderSelect" aria-label="真实数据源">
-            <option value="baostock">BaoStock（主数据源）</option>
-            <option value="eastmoney">东方财富（备用）</option>
+            <option value="auto">自动多源路由（推荐）</option>
+            <option value="baostock">BaoStock</option>
+            <option value="tushare">Tushare Pro（需 Token）</option>
+            <option value="tdx">通达信 TQServer（需官方组件）</option>
+            <option value="akshare">AKShare（免费备用）</option>
+            <option value="tencent">腾讯网页行情（主数据源）</option>
+            <option value="sina">新浪网页行情（证券清单/诊断）</option>
           </select>
           <button class="ghost-button" id="fetchMarketButton" type="button">获取真实行情</button>
-          <button class="primary-button" id="collectSamplesButton" type="button" title="使用 BaoStock 自动获取并筛选 A 股和场内 ETF">样本采集</button>
+          <button class="primary-button" id="collectSamplesButton" type="button" title="使用自动多源路由获取并筛选 A 股和场内 ETF">样本采集</button>
           <button class="secondary-button" id="stopCollectionButton" type="button" hidden>停止采集</button>
         </div>
         <label class="compact-field">
@@ -40,11 +45,20 @@
             <option value="daily">日线演示</option>
           </select>
         </label>
+        <label class="compact-field training-area-field">
+          <span>训练分区</span>
+          <select id="trainingAreaSelect" aria-label="训练分区">
+            <option value="indicator">指标训练区</option>
+            <option value="pattern">形态训练区</option>
+          </select>
+        </label>
         <input id="csvFileInput" type="file" accept=".csv,.tsv,.txt" hidden />
         <button class="ghost-button" id="importButton">导入日线 CSV</button>
         <input id="backupFileInput" type="file" accept="application/json,.json" hidden />
         <button class="ghost-button" id="exportSessionButton" type="button">导出训练备份</button>
         <button class="ghost-button" id="importSessionButton" type="button">导入训练备份</button>
+        <button class="primary-button" id="startIndicatorTrainingButton" type="button">开始指标训练</button>
+        <button class="ghost-button" id="openMyReviewsButton" type="button">我的复盘</button>
         <button class="ghost-button" id="resetButton">重新开始</button>
         <div class="user-box"><span id="userNameLabel">未登录</span><button class="ghost-button" id="loginButton" type="button">用户名登录</button></div>
       </div>
@@ -53,9 +67,25 @@
     <main class="page-shell">
       <section class="notice">
         <span class="notice-dot"></span>
-        <span id="dataStatus">当前为内置演示行情。</span>
-        <span id="marketDataHint">输入 A 股或场内 ETF 代码，可获取真实历史日线。</span>
+        <span id="dataStatus">尚未载入真实行情。</span>
+        <span id="marketDataHint" role="status" aria-live="polite">请输入代码获取真实历史日线，或导入 CSV / 已审核样本。</span>
+        <span class="market-recovery-actions" id="marketRecoveryActions" hidden>
+          <button class="secondary-button" id="retryMarketButton" type="button" title="按上次的代码、周期和数据源重试">重试获取</button>
+          <button class="secondary-button" id="viewSourceHealthButton" type="button">查看数据源状态</button>
+        </span>
         <span>成交价按当前 K 线收盘价，A 股模式执行 T+1，所有结果仅用于训练。</span>
+      </section>
+
+      <section class="source-health panel" aria-labelledby="sourceHealthTitle">
+        <div class="source-health-heading">
+          <div>
+            <h2 id="sourceHealthTitle">数据源状态</h2>
+          <p id="sourceHealthRouting">采集：新浪证券清单 → 腾讯前复权扫描 → BaoStock候选复核；冲突时启用第三源诊断</p>
+          </div>
+          <button class="secondary-button" id="refreshSourceHealthButton" type="button">刷新状态</button>
+        </div>
+        <div class="source-health-list" id="sourceHealthList"><span class="source-health-empty">正在读取本机数据源配置…</span></div>
+        <p class="source-health-note">这里显示上次请求的结果和时间；刷新状态不会主动测试外部行情源，历史成功不代表此刻一定可用。</p>
       </section>
 
       <section class="stat-grid" aria-label="账户概况">
@@ -81,7 +111,13 @@
         </article>
       </section>
 
+      <div class="archive-view-banner" id="archiveViewBanner" hidden>
+        <span id="archiveViewLabel">正在查看已归档复盘</span>
+        <button class="secondary-button" id="returnFromArchiveButton" type="button">返回当前训练</button>
+      </div>
+
       <section class="workspace-grid">
+        <div class="chart-column">
         <div class="chart-panel panel">
           <div class="panel-heading chart-heading">
             <div class="chart-title">
@@ -92,9 +128,26 @@
               <p id="dateLabel">日期已隐藏 · 训练结束后揭晓</p>
             </div>
             <div class="chart-tools">
+              <div class="chart-drawing-tools" role="toolbar" aria-label="图表工具">
+                <button class="secondary-button" id="chartInspectTool" type="button" aria-pressed="true">查看</button>
+                <button class="secondary-button" id="chartNoteTool" type="button" aria-pressed="false">笔记</button>
+                <button class="secondary-button" data-chart-tool="support" type="button">支撑线</button>
+                <button class="secondary-button" data-chart-tool="resistance" type="button">压力线</button>
+                <button class="secondary-button" data-chart-tool="range" type="button">区间</button>
+                <button class="secondary-button" data-chart-tool="trend" type="button">趋势线</button>
+                <button class="secondary-button" data-chart-tool="select" type="button">选择调整</button>
+                <button class="secondary-button" data-chart-tool="pan" type="button">平移</button>
+                <button class="secondary-button" id="chartUndoTool" type="button" title="撤销">撤销</button>
+                <button class="secondary-button" id="chartRedoTool" type="button" title="重做">重做</button>
+                <button class="secondary-button" id="chartDeleteTool" type="button" title="删除选中标记">删除</button>
+                <button class="secondary-button" id="chartMarksToggle" type="button" aria-pressed="true">隐藏标记</button>
+                <input id="chartMarkLabel" type="text" maxlength="16" aria-label="标记标签" placeholder="标签（可选）" />
+                <input id="chartMarkReason" type="text" maxlength="80" aria-label="标记理由" placeholder="观察说明（可选）" />
+              </div>
+              <output id="chartObservation" class="chart-observation" aria-live="polite">查看模式 · 移动指针观察，触屏可按住移动</output>
               <label class="check-field"><input id="identityToggle" type="checkbox" /> 显示名称和日期</label>
-              <label class="check-field"><input id="chipToggle" type="checkbox" checked /> 估算筹码峰</label>
-              <label class="compact-field indicator-field">
+              <label class="check-field"><input id="chipToggle" type="checkbox" checked /> 估算成交密集区</label>
+            <label class="compact-field indicator-field">
                 <span>副图</span>
               <select id="indicatorSelect">
                 <option value="none">无</option>
@@ -103,12 +156,15 @@
                 <option value="both" selected>MACD + KDJ</option>
               </select>
             </label>
+            <label class="check-field wave-annotation-control" id="waveAnnotationControl" hidden><input id="waveAnnotationToggle" type="checkbox" checked /> 波段标注</label>
+            <button class="secondary-button all-waves-button" id="allWavesButton" type="button" hidden>全部波段</button>
             <div class="chart-zoom-controls" aria-label="K线缩放">
               <button class="icon-button" id="zoomOutButton" type="button" title="缩小，显示更多历史 K 线">−</button>
               <button class="secondary-button zoom-reset-button" id="zoomResetButton" type="button">全景</button>
               <button class="icon-button" id="zoomInButton" type="button" title="放大，显示更少 K 线">＋</button>
               <span id="zoomLabel">65 根</span>
             </div>
+          </div>
           </div>
           <div class="chart-wrap">
             <canvas id="chartCanvas" aria-label="K线图"></canvas>
@@ -119,7 +175,7 @@
           </div>
           <section class="result-reveal" id="resultReveal" hidden aria-live="polite">
             <div>
-              <span class="result-kicker">本局形态答案</span>
+              <span class="result-kicker">样本信息</span>
               <h3 id="revealedPatternName">—</h3>
               <p id="revealedPatternRule">—</p>
               <small id="revealedPatternNote">训练结束后显示形态信息</small>
@@ -134,14 +190,69 @@
             <div><span>手续费</span><strong id="resultFeeValue">—</strong></div>
             <div><span>已实现盈亏</span><strong id="resultRealizedValue">—</strong></div>
           </section>
+          <section class="operation-review" id="operationReview" hidden aria-label="本局操作复盘">
+            <div class="operation-review-heading">
+              <div><span class="result-kicker">本局操作复盘</span><h3>按波段查看交易与风险</h3><p id="operationReviewSummary"></p></div>
+              <button class="secondary-button" id="sessionReviewNoteButton" type="button">写整局复盘结论</button>
+            </div>
+            <div class="operation-suggestions" id="operationSuggestions"></div>
+            <details class="review-rule-details">
+              <summary>查看复盘依据与证据状态</summary>
+              <div class="review-rule-references" id="reviewRuleReferences"></div>
+            </details>
+            <details class="review-rule-details"><summary>查看已确认的40张规则卡片</summary><div class="review-rule-card-catalog" id="reviewRuleCardCatalog"></div></details>
+            <div class="operation-waves" id="operationWaves"></div>
+          </section>
           <div class="legend-row">
             <span><i class="legend-candle up"></i>上涨</span>
             <span><i class="legend-candle down"></i>下跌</span>
             <span><i class="legend-line ma5"></i>MA5</span>
             <span><i class="legend-line ma20"></i>MA20</span>
             <span><i class="legend-line ma60"></i>MA60</span>
-            <span class="legend-note">红涨绿跌 · 筹码峰为量价估算 · 费用规则：佣金最低 5 元，按训练费率计算</span>
+            <span class="legend-note">红涨绿跌 · 成交密集区由日线量价估算，不代表真实持仓成本 · 费用规则：佣金最低 5 元，按训练费率计算</span>
           </div>
+        </div>
+
+        <section class="panel replay-panel">
+          <div class="panel-heading">
+            <div>
+              <h2>推进训练</h2>
+              <p id="replayHint">先观察当前走势，再决定是否交易 · 空格键推进</p>
+            </div>
+            <span class="step-count" id="stepCount">41 / 180</span>
+          </div>
+          <div class="progress-track"><span id="progressBar"></span></div>
+          <details class="operation-plan-details" id="operationPlanDetails">
+            <summary>记录当前操作计划 <span>可选，不影响训练</span></summary>
+            <div class="operation-plan-form">
+              <fieldset class="operation-signal-fieldset">
+                <legend>本次关注的指标</legend>
+                <label><input type="checkbox" data-operation-signal="均线" /> 均线</label>
+                <label><input type="checkbox" data-operation-signal="MACD" /> MACD</label>
+                <label><input type="checkbox" data-operation-signal="KDJ" /> KDJ</label>
+                <label><input type="checkbox" data-operation-signal="量能" /> 量能</label>
+                <label><input type="checkbox" data-operation-signal="筹码峰" /> 估算成交密集区</label>
+              </fieldset>
+              <label class="operation-plan-field"><span>计划最高总仓位</span>
+                <select id="operationPositionCap">
+                  <option value="">不设上限</option><option value="0.1667">约1/6仓</option><option value="0.3333">约1/3仓</option><option value="0.5">半仓</option><option value="1">全仓</option>
+                </select>
+              </label>
+              <label class="operation-plan-field"><span>操作理由</span><textarea id="operationPlanReason" maxlength="240" rows="2" placeholder="当前为什么准备买入、卖出或继续观望？"></textarea></label>
+              <label class="operation-plan-field"><span>收盘失效价（可选）</span><input id="operationInvalidationPrice" type="number" min="0" step="0.01" placeholder="收盘低于此价时，复核持仓计划" /></label>
+              <div class="operation-plan-actions"><button class="secondary-button" id="saveOperationPlanButton" type="button">保存本根计划</button><span id="operationPlanStatus" role="status"></span></div>
+            </div>
+          </details>
+          <section class="next-session-checklist" id="nextSessionChecklist" hidden aria-label="本局复盘检查项">
+            <div><strong>本局关注项</strong><button class="text-button" id="clearNextSessionChecklist" type="button">清除</button></div>
+            <ul id="nextSessionChecklistItems"></ul>
+          </section>
+          <div class="replay-actions">
+            <button class="secondary-button" id="previousButton">上一根</button>
+            <button class="primary-button" id="nextButton">下一根 K 线 <kbd>空格</kbd></button>
+            <button class="secondary-button" id="finishButton">结束训练</button>
+          </div>
+        </section>
         </div>
 
         <aside class="side-column">
@@ -157,10 +268,12 @@
               <div><span>持仓成本</span><strong id="avgCostValue">¥0.00</strong></div>
               <div><span>可卖数量</span><strong id="availableValue">0 股</strong></div>
             </div>
+            <div class="tranche-summary" id="trancheSummary" aria-live="polite">当前没有持仓批次</div>
             <label class="number-field">
               <span>交易数量（100 股整数倍）</span>
               <input id="quantityInput" type="number" min="100" step="100" value="10000" />
             </label>
+            <p class="trade-preview" id="tradePreview" aria-live="polite"></p>
             <label class="compact-field trading-rule-field">
               <span>交易规则</span>
               <select id="tradingRuleSelect">
@@ -171,24 +284,56 @@
             </label>
             <div class="quick-position" aria-label="快捷仓位">
               <div class="quick-position-row">
-                <span>买入仓位</span>
+                <span>加仓比例</span>
                 <div>
-                  <button type="button" data-quick-side="buy" data-divisor="1">全仓</button>
-                  <button type="button" data-quick-side="buy" data-divisor="2">半仓</button>
-                  <button type="button" data-quick-side="buy" data-divisor="3">1/3仓</button>
-                  <button type="button" data-quick-side="buy" data-divisor="6">1/6仓</button>
+                  <button type="button" data-quick-side="buy" data-divisor="6">1/6</button>
+                  <button type="button" data-quick-side="buy" data-divisor="4">1/4</button>
+                  <button type="button" data-quick-side="buy" data-divisor="3">1/3</button>
+                  <button type="button" data-quick-side="buy" data-divisor="2">1/2</button>
+                  <button type="button" data-quick-side="buy" data-divisor="0">用完现金</button>
                 </div>
               </div>
+              <small class="quick-position-note">比例按当前总资产估算新增金额；股数向下取整至 100 股。</small>
+              <label class="compact-field sell-target-field">
+                <span>卖出对象</span>
+                <select id="sellLotSelect"><option value="">全部可卖持仓（先买先卖）</option></select>
+              </label>
               <div class="quick-position-row">
-                <span>卖出仓位</span>
+                <span>减仓比例</span>
                 <div>
-                  <button type="button" data-quick-side="sell" data-divisor="1">全仓</button>
-                  <button type="button" data-quick-side="sell" data-divisor="2">半仓</button>
-                  <button type="button" data-quick-side="sell" data-divisor="3">1/3仓</button>
-                  <button type="button" data-quick-side="sell" data-divisor="6">1/6仓</button>
+                  <button type="button" data-quick-side="sell" data-divisor="6">1/6</button>
+                  <button type="button" data-quick-side="sell" data-divisor="4">1/4</button>
+                  <button type="button" data-quick-side="sell" data-divisor="3">1/3</button>
+                  <button type="button" data-quick-side="sell" data-divisor="2">1/2</button>
+                  <button type="button" data-quick-side="sell" data-divisor="1">全部</button>
                 </div>
               </div>
             </div>
+            <details class="tranche-plan-fields" id="tranchePlanFields">
+              <summary>本次买入的仓位计划（可选）</summary>
+              <label class="compact-field"><span>仓位角色</span>
+                <select id="trancheRoleInput">
+                  <option value="">未指定</option>
+                  <option value="试探">试探</option>
+                  <option value="确认加仓">确认加仓</option>
+                  <option value="趋势持有">趋势持有</option>
+                  <option value="其他">其他</option>
+                </select>
+              </label>
+              <label class="trade-reason-field"><span>本批用途</span><textarea id="tranchePurposeInput" maxlength="180" rows="2" placeholder="例如：低确定性信号下的小仓试探"></textarea></label>
+              <label class="trade-reason-field"><span>退出条件</span><textarea id="trancheExitInput" maxlength="180" rows="2" placeholder="例如：收盘跌破观察低点则退出"></textarea></label>
+            </details>
+            <label class="trade-reason-field"><span>当时的交易依据（可选）</span><textarea id="tradeReasonInput" maxlength="240" rows="2" placeholder="量价、J值、分时量或仓位安排，写与你本次操作相关的依据"></textarea></label>
+            <details class="decision-capture-details" id="tradeDecisionCapture">
+              <summary>补充记录本次决策（可选）</summary>
+              <div class="decision-capture-grid">
+                <label class="compact-field"><span>本次意图</span><select id="tradeIntentInput"><option value="">暂不填写</option><option>试探买入</option><option>确认加仓</option><option>预定分批买入</option><option>继续持有</option><option>分批减仓</option><option>全部退出</option><option>空仓等待</option></select></label>
+                <label class="compact-field"><span>判断状态</span><select id="tradeCertaintyInput"><option value="">暂不填写</option><option>较明确</option><option>有冲突</option><option>不确定</option></select></label>
+                <fieldset class="decision-signal-fieldset"><legend>本次依据</legend><label><input type="checkbox" data-trade-signal="J值" /> J值</label><label><input type="checkbox" data-trade-signal="量价" /> 量价</label><label><input type="checkbox" data-trade-signal="分时量" /> 分时量</label><label><input type="checkbox" data-trade-signal="前低/关键位" /> 前低/关键位</label><label><input type="checkbox" data-trade-signal="估算成交密集区" /> 成交密集区</label><label><input type="checkbox" data-trade-signal="均线" /> 均线</label></fieldset>
+                <label class="trade-reason-field"><span>等待／确认条件</span><input id="tradeConfirmConditionInput" maxlength="120" placeholder="什么情况出现后再操作"></label>
+                <label class="trade-reason-field"><span>改变判断的条件</span><input id="tradeInvalidationConditionInput" maxlength="120" placeholder="什么情况出现后重新检查"></label>
+              </div>
+            </details>
             <div class="trade-buttons">
               <button class="buy-button" id="buyButton">买入</button>
               <button class="sell-button" id="sellButton">卖出</button>
@@ -196,11 +341,16 @@
             <p class="trade-hint" id="tradeHint">今日买入的股票将在下一根日 K 线后可卖。</p>
           </section>
 
+          <section class="panel tranche-panel" aria-labelledby="trancheTitle">
+            <div class="panel-heading"><div><h2 id="trancheTitle">分批持仓</h2><p>按每次买入分别查看和管理</p></div></div>
+            <div class="tranche-list" id="trancheList"><p class="tranche-empty">当前没有持仓批次</p></div>
+          </section>
+
           <section class="panel indicator-panel">
             <div class="panel-heading">
               <div>
                 <h2>指标读数</h2>
-                <p>仅供参考，不生成买卖信号；筹码峰为量价估算</p>
+                <p>只作背景参考；成交密集区由历史日线量价估算，不是真实持仓成本或获利盘</p>
               </div>
             </div>
             <div class="indicator-values">
@@ -213,57 +363,110 @@
               <div><span>VOL-MA120</span><strong id="volumeMa120Value">—</strong></div>
               <div><span>VOL-MA250</span><strong id="volumeMa250Value">—</strong></div>
               <div><span>量能判断</span><strong id="volumeSignalValue">—</strong></div>
-              <div><span>主筹码峰（估算）</span><strong id="chipPeakValue">—</strong></div>
-              <div><span>平均成本（估算）</span><strong id="chipAverageValue">—</strong></div>
-              <div><span>70%筹码区间</span><strong id="chipRangeValue">—</strong></div>
+              <div><span>估算成交密集峰</span><strong id="chipPeakValue">—</strong></div>
+              <div><span>估算成交量加权均价</span><strong id="chipAverageValue">—</strong></div>
+              <div><span>70%估算成交密集区</span><strong id="chipRangeValue">—</strong></div>
             </div>
+          </section>
+
+          <section class="panel log-panel">
+            <div class="panel-heading">
+              <div>
+                <h2>交易记录</h2>
+                <p>每笔成交都会保留在本局复盘中</p>
+              </div>
+              <span class="trade-count" id="tradeCount">0 笔</span>
+            </div>
+            <ol class="trade-log-list" id="tradeLogBody" aria-label="本局交易记录">
+              <li class="trade-log-empty">本局还没有交易记录</li>
+            </ol>
           </section>
         </aside>
       </section>
 
-      <section class="bottom-grid">
-        <section class="panel replay-panel">
-          <div class="panel-heading">
-            <div>
-              <h2>推进训练</h2>
-              <p id="replayHint">先观察当前走势，再决定是否交易 · 空格键推进</p>
-            </div>
-            <span class="step-count" id="stepCount">41 / 180</span>
+      <section class="panel library-panel review-archive-panel" id="myReviewsPanel" aria-labelledby="myReviewsTitle">
+        <div class="panel-heading library-heading">
+          <div><h2 id="myReviewsTitle">我的复盘</h2><p id="reviewArchiveStatus">每局结束后自动保存买卖、笔记和波段数据到本机。</p></div>
+          <div class="review-archive-actions">
+            <button class="secondary-button" id="refreshReviewsButton" type="button">刷新列表</button>
+            <button class="secondary-button" id="retryReviewSaveButton" type="button" hidden>重试保存复盘</button>
+            <button class="secondary-button" id="exportReviewsButton" type="button">导出档案</button>
+            <button class="secondary-button" id="importReviewsButton" type="button">导入档案</button>
+            <input id="reviewArchiveFileInput" type="file" accept="application/json,.json" hidden />
           </div>
-          <div class="progress-track"><span id="progressBar"></span></div>
-          <div class="replay-actions">
-            <button class="secondary-button" id="previousButton">上一根</button>
-            <button class="primary-button" id="nextButton">下一根 K 线 <kbd>空格</kbd></button>
-            <button class="secondary-button" id="finishButton">结束训练</button>
-          </div>
-        </section>
-
-        <section class="panel log-panel">
-          <div class="panel-heading">
-            <div>
-              <h2>交易记录</h2>
-              <p>每笔成交都会保留在本局复盘中</p>
-            </div>
-            <span class="trade-count" id="tradeCount">0 笔</span>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr><th>时间</th><th>方向</th><th>价格</th><th>数量</th><th>费用</th><th>成交后现金</th></tr>
-              </thead>
-              <tbody id="tradeLogBody">
-                <tr class="empty-row"><td colspan="6">本局还没有交易记录</td></tr>
-              </tbody>
-            </table>
-          </div>
+        </div>
+        <div class="review-archive-list" id="reviewArchiveList"><div class="collected-empty">正在读取本机复盘档案…</div></div>
+        <section class="review-workspace" id="reviewWorkspace" hidden>
+          <div class="review-workspace-heading"><div><span class="result-kicker">复盘工作区</span><h3 id="reviewWorkspaceTitle">—</h3><p id="reviewWorkspaceMeta"></p></div><div class="login-actions"><button class="secondary-button" id="exportCurrentReviewButton" type="button">导出本局复盘</button><button class="secondary-button" id="closeReviewWorkspaceButton" type="button">返回复盘列表</button></div></div>
+          <div id="reviewWorkspaceBody"></div>
+          <section class="review-category" id="reviewQuestionSection"><h4>针对性复盘问题</h4><p id="reviewQuestionProgress" class="trade-hint"></p><div id="reviewQuestionCard"></div><div class="review-question-options" id="reviewQuestionOptions"></div><textarea id="reviewQuestionText" rows="3" maxlength="600" placeholder="也可以写下自己的解释；暂时想不清楚可以跳过"></textarea><div class="login-actions"><button class="secondary-button" id="reviewQuestionPrevious" type="button">上一题</button><button class="secondary-button" id="reviewQuestionSkip" type="button">跳过</button><button class="primary-button" id="reviewQuestionSave" type="button">保存回答并继续</button></div></section>
+          <section class="review-category"><h4>我的整局结论与下局检查项</h4><label class="trade-reason-field"><span>本局结论（补记，不修改当时笔记）</span><textarea id="reviewConclusionInput" rows="3" maxlength="1200" placeholder="哪些做法值得保持？下次准备观察或改变什么？"></textarea></label><div class="login-actions"><button class="primary-button" id="saveReviewConclusionButton" type="button">保存复盘结论</button></div><div id="reviewConclusionList"></div><div id="reviewChecklist"></div></section>
+          <section class="review-category"><h4>教学对照：指定条件下的持有与减仓</h4><p class="trade-hint">对照仅用于学习。请自己先写条件；不寻找事后最佳点。终点取下一实际复盘波段结束处。</p><div class="review-comparison-form"><label>选择本局卖出<select id="comparisonTradeSelect"><option value="">选择一笔卖出成交</option></select></label><label>触发口径<select id="comparisonDirection"><option value="below">收盘价低于／等于</option><option value="above">收盘价高于／等于</option></select></label><label>你预先选择的触发价<input id="comparisonTriggerPrice" type="number" min="0" step="0.01" placeholder="输入用于教学的价格条件"></label><label>触发时减仓比例<select id="comparisonReduceFraction"><option value="0.25">1/4</option><option value="0.333333">1/3</option><option value="0.5" selected>1/2</option><option value="0.666667">2/3</option><option value="1">全部</option></select></label><button class="secondary-button" id="runTeachingComparison" type="button">计算教学对照</button></div><div id="teachingComparisonResults"></div></section>
         </section>
       </section>
 
-      <section class="panel library-panel">
+      <section class="panel research-panel" id="researchPanel" aria-labelledby="researchTitle">
+        <div class="panel-heading library-heading">
+          <div><h2 id="researchTitle">复盘规则研究</h2><p>独立于训练样本库；只研究当前存续、非 ST 标的。历史 ST 日期不产生信号。</p></div>
+          <div class="research-actions">
+            <button class="secondary-button" id="researchPilotButton" type="button">试跑 5 个标的</button>
+            <button class="secondary-button" id="researchStartButton" type="button">继续全市场</button>
+            <button class="secondary-button" id="researchPauseButton" type="button">暂停</button>
+            <button class="secondary-button" id="researchRetryValidationButton" type="button" hidden>继续规则重验</button>
+            <button class="secondary-button" id="researchRefreshButton" type="button">刷新报告</button>
+          </div>
+        </div>
+        <p class="trade-hint" id="researchStatus" aria-live="polite">正在读取研究进度…</p>
+        <div class="research-coverage" id="researchCoverage"></div>
+        <details class="review-rule-details" open><summary>按规则查看样本外结果与版本</summary><div class="research-report" id="researchReport">尚无研究报告。</div></details>
+        <details class="review-rule-details"><summary>提交规则阈值与文献来源（生成新版本，验证后仍需确认）</summary>
+          <div class="research-proposal">
+            <label>候选规则<select id="researchRuleSelect"><option value="personal-j-low">J 低位</option><option value="personal-j-high">J 高位</option><option value="price-volume-context">放量突破</option><option value="estimated-volume-profile">密集区回看窗口</option></select></label>
+            <label>候选阈值<input id="researchThreshold" type="number" step="0.1" value="10" /></label>
+            <label>新规则名称（留空则修改所选规则）<input id="researchNewTitle" type="text" maxlength="80" placeholder="例如：J 低于 8 的个人候选" /></label>
+            <label>来源说明<input id="researchSource" type="text" maxlength="300" placeholder="作者、论文或你的观察记录" /></label>
+            <label>来源链接（可选）<input id="researchUrl" type="url" maxlength="500" placeholder="https://…" /></label>
+            <button class="secondary-button" id="researchProposeButton" type="button">提交并重新验证</button>
+          </div>
+        </details>
+        <p class="trade-hint">研究仅供训练复盘；当前不包含退市股，存在幸存者偏差。分时缺失不补造，规则表现不构成确定的买卖建议。</p>
+      </section>
+
+      <section class="panel library-panel side-training-panel">
         <div class="panel-heading library-heading">
           <div>
-            <h2>形态样本库</h2>
-              <p>当前先整理用户图片中的形态模板；真实股票波段收藏后进入候选样本库，按置信度和审核状态管理。</p>
+            <h2>指标训练片段库</h2>
+            <p>当前按同一阶段低点生成左右侧配对片段，用于练习均线、MACD、KDJ、量能和估算成交密集区的综合判断。</p>
+          </div>
+          <span class="library-count" id="sideTrainingCount">0 个已入库片段</span>
+        </div>
+        <div class="library-toolbar">
+          <label class="compact-field">
+            <span>训练目录</span>
+            <select id="sideTrainingSelect">
+              <option value="all">全部左右侧</option>
+              <option value="left">左侧训练</option>
+              <option value="right">右侧训练</option>
+            </select>
+          </label>
+          <button class="primary-button" id="randomSideSampleButton" title="从当前左右侧目录随机抽取已审核训练片段">随机抽取指标片段</button>
+          <button class="secondary-button" id="refreshTrainingLibraryButton" type="button">刷新训练库</button>
+          <span class="library-count" id="sideTrainingPairCount">0 组配对</span>
+        </div>
+        <div class="selected-pattern" id="sideTrainingHint">
+          <span>左右侧训练片段</span>
+          <small>每条样本同时记录交易时机和阶段最低点前后位置；形态识别暂不参与当前训练。</small>
+        </div>
+        <p class="trade-hint" id="sampleLibraryStatus" role="status">正在读取本机训练库目录…</p>
+        <div class="collected-grid" id="sideTrainingGrid"><div class="collected-empty">暂未采集到已审核的左右侧训练片段。</div></div>
+        <div id="indicatorCandidateSlot"></div>
+      </section>
+
+      <section class="panel library-panel pattern-library-panel" hidden>
+        <div class="panel-heading library-heading">
+          <div>
+            <h2>形态样本库（后续功能）</h2>
+            <p>40种形态、示意图和采集规则继续保留，暂不参与当前指标训练；后续恢复形态训练时可继续使用。</p>
           </div>
           <span class="library-count" id="libraryCount">0 个模板</span>
         </div>
@@ -271,7 +474,7 @@
           <label class="compact-field">
             <span>查看库</span>
             <select id="librarySelect">
-              <option value="training">训练库</option>
+               <option value="training">训练库</option>
               <option value="sample">样本库</option>
             </select>
           </label>
@@ -286,18 +489,19 @@
             <input id="patternSearch" type="search" placeholder="输入形态名称" />
           </label>
           <button class="primary-button" id="randomPatternButton" title="随机选择一个形态知识卡，不会改变当前训练行情">随机选择知识模板</button>
-          <button class="primary-button" id="randomSampleButton" title="从已审核真实样本中随机抽取一段行情开始训练">随机抽取训练片段</button>
-          <button class="secondary-button" id="scanSamplesButton" title="扫描当前已加载的真实行情或本地 CSV">扫描候选片段</button>
+          <button class="primary-button" id="randomSampleButton" disabled title="形态训练后续开放">形态训练后续开放</button>
+          <button class="secondary-button" id="scanSamplesButton" title="预览当前行情的旧形态识别规则">预览形态候选</button>
         </div>
         <div class="selected-pattern" id="selectedPattern">
           <span>当前未选择知识模板</span>
           <small>知识模板用于学习形态规则，不会改变当前 K 线；实际行情由训练样本决定</small>
         </div>
-        <section class="candidate-samples">
+        <div id="patternCandidateSlot"></div>
+        <section class="candidate-samples" id="candidateSamplesSection">
           <div class="collected-heading">
             <div>
               <h3>候选样本库</h3>
-              <p id="candidateScanHint">点击顶部“样本采集”，系统会自动获取并筛选 A 股和场内 ETF；网络不稳定时可用 CSV 导入。</p>
+              <p id="candidateScanHint">点击顶部“样本采集”，系统会围绕阶段低点生成左右侧配对候选；严格复核后自动进入指标训练库。</p>
               <div class="collection-progress" id="collectionProgress" hidden>
                 <div class="collection-progress-meta"><span id="collectionProgressLabel">等待采集</span><strong id="collectionProgressPercent">0%</strong></div>
                 <progress id="collectionProgressBar" max="100" value="0" aria-label="样本采集进度">0%</progress>
@@ -312,7 +516,7 @@
           <div class="collected-heading">
             <div>
               <h3>我收藏的训练片段</h3>
-              <p>真实行情收藏默认待审核；只有经过验证且置信度达到 90% 的样本才允许自动进入训练库。多人服务上线后才会共享给其他用户。</p>
+              <p>形态收藏片段仍按原审核流程处理；当前左右侧指标片段由独立配对规则自动审核入库。多人服务上线后才会共享给其他用户。</p>
             </div>
             <span class="library-count" id="collectedSampleCount">0 个片段</span>
           </div>
@@ -333,13 +537,39 @@
       </section>
     </div>
 
+    <div class="modal-backdrop bar-note-modal" id="barNoteModal" hidden>
+      <section class="login-card bar-note-card" role="dialog" aria-modal="true" aria-labelledby="barNoteTitle">
+        <div class="panel-heading">
+          <div><h2 id="barNoteTitle">K线笔记</h2><p id="barNoteMeta"></p></div>
+          <button class="icon-button" id="closeBarNoteButton" type="button" aria-label="关闭笔记">×</button>
+        </div>
+        <div class="bar-note-entries" id="barNoteEntries"></div>
+        <details class="decision-capture-details" open>
+          <summary>结构化记录（可选，可跳过）</summary>
+          <div class="decision-capture-grid">
+            <label class="compact-field"><span>当时意图</span><select id="noteIntentInput"><option value="">暂不填写</option><option>试探买入</option><option>确认加仓</option><option>预定分批买入</option><option>继续持有</option><option>分批减仓</option><option>全部退出</option><option>空仓等待</option></select></label>
+            <label class="compact-field"><span>判断状态</span><select id="noteCertaintyInput"><option value="">暂不填写</option><option>较明确</option><option>有冲突</option><option>不确定</option></select></label>
+            <fieldset class="decision-signal-fieldset"><legend>关注依据</legend><label><input type="checkbox" data-note-signal="J值" /> J值</label><label><input type="checkbox" data-note-signal="量价" /> 量价</label><label><input type="checkbox" data-note-signal="分时量" /> 分时量</label><label><input type="checkbox" data-note-signal="前低/关键位" /> 前低/关键位</label><label><input type="checkbox" data-note-signal="估算成交密集区" /> 成交密集区</label><label><input type="checkbox" data-note-signal="均线" /> 均线</label></fieldset>
+            <label class="trade-reason-field"><span>等待／确认条件</span><input id="noteConfirmConditionInput" maxlength="120" placeholder="什么情况出现后再操作"></label>
+            <label class="trade-reason-field"><span>改变判断的条件</span><input id="noteInvalidationConditionInput" maxlength="120" placeholder="什么情况出现后重新检查"></label>
+            <label class="trade-reason-field"><span>自己标记的前低／关键价位区间（可选）</span><div class="key-level-range"><input id="noteKeyLevelInput" type="number" min="0" step="0.01" placeholder="下沿／单一价位"><input id="noteKeyLevelUpperInput" type="number" min="0" step="0.01" placeholder="上沿（可留空）"></div><small>由你标记，不替你选择前低；补标会保留新增时间和历史。</small></label>
+          </div>
+        </details>
+        <label class="trade-reason-field"><span id="barNoteInputLabel">当前判断</span><textarea id="barNoteInput" maxlength="1200" rows="4" placeholder="可参考量价、KDJ 的 J 值、分时量、仓位安排或失效条件；只写与你本次判断相关的内容"></textarea></label>
+        <div class="note-parse-preview" id="noteParsePreview" hidden></div>
+        <p class="trade-hint" id="barNoteTimingHint"></p>
+        <div class="login-actions"><button class="secondary-button" id="cancelBarNoteButton" type="button">关闭</button><button class="primary-button" id="saveBarNoteButton" type="button">保存笔记</button></div>
+      </section>
+    </div>
+
     <div class="modal-backdrop" id="collectionProgressModal" hidden>
       <section class="collection-progress-card" role="dialog" aria-modal="false" aria-labelledby="collectionProgressTitle">
         <div class="panel-heading">
-          <div><h2 id="collectionProgressTitle">样本采集中</h2><p>正在使用 BaoStock 自动筛选真实 A 股和场内 ETF 数据</p></div>
+          <div><h2 id="collectionProgressTitle">样本采集中</h2><p>正在按多数据源路由自动筛选真实 A 股和场内 ETF 数据</p></div>
           <button class="icon-button" id="closeCollectionProgressButton" type="button" aria-label="关闭采集进度">×</button>
         </div>
         <p class="trade-hint" id="collectionModalStatus">正在准备采集任务…</p>
+        <p class="collection-modal-stage" id="collectionModalStage"></p>
         <div class="collection-modal-progress">
           <div class="collection-progress-meta"><span id="collectionModalProgressLabel">等待证券清单</span><strong id="collectionModalProgressPercent">0%</strong></div>
           <progress id="collectionModalProgressBar" max="100" value="0" aria-label="样本采集进度">0%</progress>
@@ -348,7 +578,17 @@
           <div><span>已扫描 / 总数</span><strong id="collectionModalScanned">0 / 0</strong></div>
           <div><span>成功</span><strong id="collectionModalSuccess">0</strong></div>
           <div><span>失败</span><strong id="collectionModalFailed">0</strong></div>
-          <div><span>合格候选</span><strong id="collectionModalCandidates">0</strong></div>
+          <div><span>左右侧候选</span><strong id="collectionModalCandidates">0</strong></div>
+        </div>
+        <div class="collection-progress-detail">
+          <span>腾讯扫描命中 <b id="collectionModalPrefiltered">0</b></span>
+          <span>腾讯候选 <b id="collectionModalTencent">0</b></span>
+          <span>BaoStock复核 <b id="collectionModalBaoStock">0</b></span>
+          <span>分时补采 <b id="collectionModalIntraday">0 / 0</b></span>
+          <span>等待复核 <b id="collectionModalPending">0</b></span>
+          <span>严格通过 <b id="collectionModalStrict">0</b></span>
+          <span>警告待审 <b id="collectionModalWarning">0</b></span>
+          <span>不通过 <b id="collectionModalRejected">0</b></span>
         </div>
         <p class="collection-modal-current" id="collectionModalCurrent">等待开始请求…</p>
         <div class="login-actions">
@@ -358,8 +598,44 @@
       </section>
     </div>
 
-    <script src="library.js"></script>
-    <script src="app.js"></script>
+    <div class="modal-backdrop" id="retryProgressModal" hidden>
+      <section class="collection-progress-card retry-progress-card" role="dialog" aria-modal="true" aria-labelledby="retryProgressTitle">
+        <div class="panel-heading">
+          <div><h2 id="retryProgressTitle">重新复核样本</h2><p id="retryProgressMeta">正在处理候选样本</p></div>
+          <button class="icon-button" id="closeRetryProgressButton" type="button" aria-label="关闭复核进度">×</button>
+        </div>
+        <p class="trade-hint" id="retryProgressStatus">正在启动…</p>
+        <div class="collection-progress-detail retry-progress-detail">
+          <span>阶段 <b id="retryProgressStage">准备</b></span>
+          <span>重试次数 <b id="retryProgressAttempt">0</b></span>
+          <span>耗时 <b id="retryProgressElapsed">0 ms</b></span>
+        </div>
+        <p class="collection-modal-current" id="retryProgressCurrent">等待请求…</p>
+        <div class="login-actions">
+          <button class="primary-button" id="closeRetryProgressAction" type="button" hidden>关闭</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="modal-backdrop intraday-volume-modal" id="intradayVolumeModal" hidden>
+      <section class="intraday-volume-card" role="dialog" aria-modal="true" aria-labelledby="intradayVolumeTitle">
+        <div class="panel-heading">
+          <div><h2 id="intradayVolumeTitle">分时价量</h2><p id="intradayVolumeMeta">选择一根日 K 查看真实 5 分钟价量</p></div>
+          <button class="icon-button" id="closeIntradayVolumeButton" type="button" aria-label="关闭分时成交量">×</button>
+        </div>
+        <p class="trade-hint" id="intradayVolumeStatus">等待获取真实分时数据…</p>
+        <div class="intraday-volume-chart" id="intradayVolumeChart" aria-live="polite"></div>
+        <div class="login-actions">
+          <button class="secondary-button" id="retryIntradayVolumeButton" type="button" hidden>重新获取</button>
+          <button class="primary-button" id="closeIntradayVolumeAction" type="button">关闭</button>
+        </div>
+      </section>
+    </div>
+
+    <script src="library.js?v=20260925-collect-1"></script>
+    <script src="review_rules.js?v=20261004-review-coach-v1"></script>
+    <script src="app.js?v=20261004-chart-tools-v1"></script>
+    <script src="research_ui.js?v=20260927-research-v1"></script>
     <script>
       if ("serviceWorker" in navigator) {
         window.addEventListener("load", () => {

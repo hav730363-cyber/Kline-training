@@ -65,7 +65,7 @@ function waitForHealth(port, timeout = 12000) {
 
 function servicePath() {
   if (app.isPackaged) return path.join(process.resourcesPath, "K线训练服务.exe");
-  return path.join(__dirname, "..", "dist-sidecar", "K线训练服务.exe");
+  return path.join(__dirname, "..", "dist-sidecar-v26", "K线训练服务.exe");
 }
 
 async function startService() {
